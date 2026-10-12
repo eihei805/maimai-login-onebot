@@ -211,6 +211,7 @@ def handle(event: dict[str, Any]) -> None:
                  '【登录取分】\n'
                  '• /login 或 /绑定账号 二维码文本：登录并保留会话\n'
                  '• /logout：退出自己的游戏会话\n'
+                 '• /清理会话：归档「登录未成功」留下的未确认记录（不会冒充已登出）\n'
                  '• /取分 二维码文本：取分后自动登出\n\n'
                  '【成绩同步】\n'
                  '• /token：查看水鱼、落雪 Token 获取方式\n'
@@ -243,7 +244,7 @@ def handle(event: dict[str, Any]) -> None:
     if token_help:
         _group_qr_hint(int(event['group_id']), TOKEN_HELP.replace('私聊绑定', '群内绑定（须成功撤回）'))
         return
-    if text in ('/logout', '/同意HTTP取分', '/撤销HTTP取分', '/上传状态', '/解绑水鱼', '/解绑落雪'):
+    if text in ('/logout', '/清理会话', '/同意HTTP取分', '/撤销HTTP取分', '/上传状态', '/解绑水鱼', '/解绑落雪'):
         synthetic = dict(event, message_type='private')
         def report(_user: int, result: str) -> None:
             _group_qr_hint(int(event['group_id']), result.replace('私聊', '群内'))

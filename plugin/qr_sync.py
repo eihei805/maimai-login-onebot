@@ -26,7 +26,7 @@ CONSENT = ('取分会将二维码发送到游戏的原始 HTTP 接口（未加�
            '并登录游戏读取成绩；/login 保留会话直到 /logout，/取分 自动尝试登出。仅发送你有权使用的二维码。'
            '如接受，请私聊发送 /同意HTTP取分，然后重新发送 /login <SGWCMAID二维码文本>。'
            '可用 /撤销HTTP取分 撤回后续取分授权；取分结果会私密保存在服务器供后续上传使用。')
-HELP = '私聊用法：/login <SGWCMAID二维码文本> 登录取分并保留会话，/logout 实际登出；/取分 <SGWCMAID二维码文本> 或直接发送二维码文本取分后自动登出。仅支持文本。'
+HELP = '私聊用法：/login <SGWCMAID二维码文本> 登录取分并保留会话，/logout 实际登出；/取分 <SGWCMAID二维码文本> 或直接发送二维码文本取分后自动登出；/清理会话 用于归档「登录未成功」的未确认记录。仅支持文本。'
 
 
 class CaptureError(RuntimeError):
@@ -44,7 +44,7 @@ class CaptureResult:
 
 def sensitive_text(text: str) -> bool:
     # Broad guard, including malformed QR and secret-bearing commands.
-    return 'SGWCMAID' in text.upper() or text.lower().startswith(('/login', '/logout')) or text.startswith(('/取分', '/同意HTTP取分', '/撤销HTTP取分', '/绑定', '/解绑', '/上传'))
+    return 'SGWCMAID' in text.upper() or text.lower().startswith(('/login', '/logout', '/清理会话')) or text.startswith(('/取分', '/同意HTTP取分', '/撤销HTTP取分', '/绑定', '/解绑', '/上传'))
 
 
 def event_text(event: dict) -> str:
@@ -148,6 +148,64 @@ def session_exists(user, private=PRIVATE):
         return False
     return True  # Includes corrupt files/symlinks: fail closed.
 
+
+def session_record(user, private=PRIVATE):
+    """Return the parsed record, or None when this QQ has no record at all."""
+    if not session_exists(user, private):
+        return None
+    try:
+        record = read_private(session_file(user, private), 65536)
+    except CaptureError:
+        raise
+    except Exception:
+        raise CaptureError('session_record_unreadable') from None
+    if not isinstance(record, dict):
+        raise CaptureError('session_record_unreadable')
+    return record
+
+
+ARCHIVE = Path(os.getenv('MAIMAI_ORPHAN_ARCHIVE', str(PRIVATE / 'archive')))
+
+
+def _private_backup_dir(path=ARCHIVE):
+    """Same ownership/mode rule as the live private dir; never create loose parents."""
+    parent = path.parent
+    s = parent.lstat()
+    if not stat.S_ISDIR(s.st_mode) or s.st_uid != os.getuid() or stat.S_IMODE(s.st_mode) != 0o700:
+        raise CaptureError('orphan_archive_unavailable')
+    path.mkdir(mode=0o700, exist_ok=True)
+    s = path.lstat()
+    if not stat.S_ISDIR(s.st_mode) or s.st_uid != os.getuid() or stat.S_IMODE(s.st_mode) != 0o700:
+        raise CaptureError('orphan_archive_unavailable')
+    return path
+
+
+def reap_orphan(user, *, private=PRIVATE, archive=None, now=None):
+    """Archive a record that carries no game session. Never fakes a logout.
+
+    Only `unknown` records are eligible: they hold no login fields, so no
+    UserLogoutApi can be sent and no `closed` state is reachable for them. The
+    record is renamed into the archive instead of deleted, so the trail survives.
+    Nothing is written to the game and no network call is made.
+    """
+    private_directory(private)
+    record = session_record(user, private)
+    if record is None:
+        return {'reaped': False, 'reason': 'no_record'}
+    if record.get('owner') != user or record.get('version') != 1 or record.get('state') not in ('unknown', 'active', 'closed'):
+        raise CaptureError('session_record_unreadable')
+    if record.get('state') != 'unknown':
+        return {'reaped': False, 'reason': 'state_' + record['state']}
+    archive = ARCHIVE if archive is None else archive
+    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(now if now is not None else time.time()))
+    destination = _private_backup_dir(archive) / ('orphan-session-' + user + '-' + stamp + '.json')
+    source = session_file(user, private)
+    if destination.exists():
+        raise CaptureError('orphan_archive_collision')
+    os.rename(source, destination)
+    os.chmod(destination, 0o600)
+    return {'reaped': True, 'reason': 'unknown_without_session', 'archive': str(destination)}
+
 def logout(user, *, private=PRIVATE, client=CLIENT, timeout=75):
     private_directory(private)
     record = read_private(session_file(user, private), 65536)
@@ -163,10 +221,11 @@ def logout(user, *, private=PRIVATE, client=CLIENT, timeout=75):
 
 class QRSync:
     def __init__(self, private: Path = PRIVATE, *, runner=capture, cooldown=60, on_result=None,
-                 before_capture=None, logout_runner=logout):
+                 before_capture=None, logout_runner=logout, archive=None):
         self.private = private
         self.runner = runner
         self.logout_runner = logout_runner
+        self.archive = archive
         self.cooldown = cooldown
         self.on_result = on_result
         self.before_capture = before_capture
@@ -221,6 +280,30 @@ class QRSync:
                 except Exception:
                     self.gate.release()
                     raise
+                return True
+            if text == '/清理会话':
+                # Only ever archives a record that provably holds no game session.
+                if not self.gate.acquire(blocking=False):
+                    send(int(user), '取分或登出正在进行，请稍后重试。')
+                    return True
+                try:
+                    if not session_exists(user, self.private):
+                        send(int(user), '没有本机器人保留的会话记录。')
+                        return True
+                    state = (session_record(user, self.private) or {}).get('state')
+                    if state == 'unknown':
+                        outcome = reap_orphan(user, private=self.private, archive=self.archive)
+                        send(int(user), '未确认记录已归档（此前登录未成功，没有会话需要登出）；可以重新 /login。'
+                             if outcome.get('reaped') else
+                             '记录状态未变，请稍后重试或联系管理员。')
+                    elif state == 'active':
+                        send(int(user), '存在已保留的游戏会话，请先 /logout；未做任何清理。')
+                    else:
+                        send(int(user), '记录需管理员处理；未做任何清理。')
+                except Exception:
+                    send(int(user), '清理暂不可用，请稍后重试。')
+                finally:
+                    self.gate.release()
                 return True
             if text in ('/同意HTTP取分', '/撤销HTTP取分'):
                 accepted = text == '/同意HTTP取分'

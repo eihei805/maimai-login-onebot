@@ -26,7 +26,7 @@ class LifecycleTests(unittest.TestCase):
         p = patch.object(live, 'PRIVATE', self.private); p.start(); self.addCleanup(p.stop)
         p = patch('socket.socket', side_effect=AssertionError('offline')); p.start(); self.addCleanup(p.stop)
         self.config = m.Config('https://qr.invalid/lookup', 'https://game.invalid/api/',
-            'A63E01ABCDE','GAMEID',b'Q'*32,b'fixture',bytes(range(32)),bytes(range(16)),
+            'A63E01ABCDE','MAID',b'Q'*32,b'fixture',bytes(range(32)),bytes(range(16)),
             'test','application/json',{'Content-Type':'application/json'})
         self.codec = m.Codec(self.config.aes_key,self.config.aes_iv)
         self.calls = []
@@ -171,5 +171,63 @@ class LifecycleTests(unittest.TestCase):
         with patch.object(q.subprocess,'run',side_effect=timeout):
             with self.assertRaises(q.CaptureError): q.capture(USER,QR,private=self.private,retain=True)
         self.assertEqual(live.read_session(USER)['state'],'unknown')
+
+    def test_cleanup_entry_archives_unknown_but_logout_is_unchanged(self):
+        sent=[]; send=lambda uid,text: sent.append(text)
+        closer=Mock(side_effect=RuntimeError('must-not-call'))
+        sync=q.QRSync(self.private,logout_runner=closer,runner=Mock(side_effect=RuntimeError('must-not-call')),archive=self.private/'archive')
+        archive=self.private/'archive'  # parent is the 0700 temp dir
+        sync._consent(USER,True)
+        # (a) /logout keeps its original contract: it never archives anything, it
+        # only ever asks the game runner, and an unconfirmed result retains the
+        # record. The game side is what closes a session.
+        live.write_session(USER,{'state':'unknown'},reserve=True)
+        sync.handle(self.event('/logout'),send)
+        self.assertTrue(sync.gate.acquire(timeout=2)); sync.gate.release()
+        self.assertEqual(closer.call_count,1)
+        self.assertIn('登出未确认',sent[-1]); self.assertNotIn('已确认游戏登出',sent[-1])
+        self.assertTrue(live.session_path(USER).exists())
+        self.assertFalse(archive.exists())  # nothing was archived behind /logout
+        sent.clear(); sync.handle(self.event('/login '+QR),send)
+        self.assertIn('已有保留或状态未确认的会话',sent[-1])  # still blocked, as before
+        # (b) the explicit entry point archives the sessionless record and unblocks
+        sent.clear(); sync.handle(self.event('/清理会话'),send)
+        self.assertIn('未确认记录已归档',sent[-1]); self.assertNotIn('已确认游戏登出',sent[-1])
+        self.assertFalse(live.session_path(USER).exists())
+        archived=sorted(archive.glob('orphan-session-'+USER+'*.json'))
+        self.assertEqual(len(archived),1)
+        self.assertEqual(archived[0].stat().st_mode & 0o777,0o600)
+        self.assertEqual(json.loads(archived[0].read_text())['state'],'unknown')
+        sent.clear(); sync.handle(self.event('/login '+QR),send)
+        self.assertTrue(any('正在验证二维码并尝试登录' in t for t in sent))
+        self.assertFalse(any('已有保留或状态未确认的会话' in t for t in sent))
+        self.assertTrue(sync.gate.acquire(timeout=2)); sync.gate.release()
+        live.session_path(USER).unlink(missing_ok=True)
+        # (c) the explicit entry never touches an active session
+        self.committed(); before=live.session_path(USER).read_bytes(); sent.clear()
+        sync.handle(self.event('/清理会话'),send)
+        self.assertIn('请先 /logout',sent[-1])
+        self.assertEqual(live.session_path(USER).read_bytes(),before)
+        self.assertEqual(closer.call_count,1)  # still only the step-(a) attempt
+        self.assertEqual(len(list(archive.glob('orphan-session-*.json'))),1)
+        # (d) nothing to clean
+        live.session_path(USER).unlink()
+        sent.clear(); sync.handle(self.event('/清理会话'),send)
+        self.assertIn('没有本机器人保留的会话记录',sent[-1])
+    def test_reap_orphan_refuses_non_unknown_and_bad_input(self):
+        archive=self.private/'archive'
+        self.assertFalse(q.reap_orphan(USER,private=self.private,archive=archive)['reaped'])
+        live.write_session(USER,{'state':'closed'},reserve=True)
+        out=q.reap_orphan(USER,private=self.private,archive=archive)
+        self.assertFalse(out['reaped']); self.assertEqual(out['reason'],'state_closed')
+        self.assertTrue(live.session_path(USER).exists())
+        for bad in ('../12345','1234','notaqq','00000000'):
+            with self.assertRaises(q.CaptureError): q.reap_orphan(bad,private=self.private,archive=archive)
+        # symlinked records fail closed and are never archived
+        live.session_path(USER).unlink()
+        target=self.private/'target2'; target.write_bytes(b'{"state":"unknown","owner":"'+USER.encode()+b'","version":1}')
+        os.chmod(target,0o600); live.session_path(USER).symlink_to(target)
+        with self.assertRaises(Exception): q.reap_orphan(USER,private=self.private,archive=archive)
+        self.assertTrue(live.session_path(USER).is_symlink())
 
 if __name__ == '__main__': unittest.main()
