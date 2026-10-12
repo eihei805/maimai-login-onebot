@@ -31,6 +31,33 @@ python3 plugin/main.py
 
 **本发布包不包含游戏生产配置、协议密钥、真实二维码、登录会话、站点 Token、用户成绩或曲库。** 登录后端需要部署者合法取得并配置 `private/config.json`，包含 `config` 对象和 `region_id`、`place_id`。具体字段与校验见 `maimai-minimal-client.py` 的 `Config` 及 `maimai-live-client.py` 的 `load_config`。不提供有效密钥，不会自动发现其他部署的凭据。未提供配置时真实登录不可用。
 
+### private/config.json 结构（全部为占位符，非真实值）
+
+```json
+{
+  "region_id": 0,
+  "place_id": 0,
+  "blockers": [],
+  "config": {
+    "qr_url": "https://qr-endpoint.invalid/lookup",
+    "game_base": "https://game-endpoint.invalid/SomeServlet/",
+    "chip_id": "A63E01XXXXX",
+    "open_game_id": "GAMEID",
+    "qr_secret": "<64位十六进制>",
+    "salt": "<十六进制>",
+    "aes_key": "<64位十六进制>",
+    "aes_iv": "<32位十六进制>",
+    "mai_encoding": "1.00",
+    "game_content_type": "application/json",
+    "qr_headers": {"User-Agent": "<客户端标识>", "Content-Type": "application/json"}
+  }
+}
+```
+
+字段格式要求：`chip_id` 需匹配 `A63E01` 加 5 位大写字母或数字；`qr_secret`、`aes_key` 为 32 字节（64 位十六进制），`aes_iv` 为 16 字节（32 位十六进制），`salt` 非空；`region_id`、`place_id` 必须为整数。上述十六进制字段在加载时通过 `bytes.fromhex` 解码，非法长度或形状会被拒绝。
+
+公开仓库请勿填入真实机房域名、区服、机台标识或协议密钥；建议在公开文档中保持占位符，真实值仅保留在本地未跟踪的 private 目录。
+
 可选成绩上传还需要将公开曲库 `music_data.json` 和 `songs.json` 放入 `plugin/data/`；缺少曲库时上传失败会明确反馈，登录核心不依赖这些缓存。仅完整取分触发上传，上传提示“已接受，待核验”不等于已完成远端读回核验。
 
 ## 离线验证

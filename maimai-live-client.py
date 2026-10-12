@@ -272,7 +272,7 @@ def logout_owned(owner, client, transport):
 
 def self_test():
     c = m.Config('https://example.invalid/qr', 'https://example.invalid/game/',
-        'A63E01ABCDE', 'MAID', b'Q'*32, b'fixture', bytes(range(32)), bytes(range(16)),
+        'A63E01ABCDE', 'GAMEID', b'Q'*32, b'fixture', bytes(range(32)), bytes(range(16)),
         'test', 'application/json', {'Content-Type':'application/json'})
     codec = m.Codec(c.aes_key, c.aes_iv)
     seen = []
@@ -288,7 +288,7 @@ def self_test():
             reply = {'nextIndex':0, 'userMusicList':[]}
         return m.Response(200, codec.encode(m.json_bytes(reply)))
     client = m.Client(c, fixture)
-    session = client.login('SGWCMAID'+'X'*12+'A'*64, m.LoginInputs(16,4677,''))
+    session = client.login('SGWCMAID'+'X'*12+'A'*64, m.LoginInputs(1,2,''))
     scores = client.scores(session, page_budget=2)
     assert scores.complete and scores.pages == 1 and len(seen) == 3
     # Exercise the real adapter via an in-memory opener; zero network.

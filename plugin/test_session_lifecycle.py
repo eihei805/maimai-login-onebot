@@ -26,7 +26,7 @@ class LifecycleTests(unittest.TestCase):
         p = patch.object(live, 'PRIVATE', self.private); p.start(); self.addCleanup(p.stop)
         p = patch('socket.socket', side_effect=AssertionError('offline')); p.start(); self.addCleanup(p.stop)
         self.config = m.Config('https://qr.invalid/lookup', 'https://game.invalid/api/',
-            'A63E01ABCDE','MAID',b'Q'*32,b'fixture',bytes(range(32)),bytes(range(16)),
+            'A63E01ABCDE','GAMEID',b'Q'*32,b'fixture',bytes(range(32)),bytes(range(16)),
             'test','application/json',{'Content-Type':'application/json'})
         self.codec = m.Codec(self.config.aes_key,self.config.aes_iv)
         self.calls = []

@@ -319,7 +319,7 @@ def self_test():
     class Tests(unittest.TestCase):
         def setUp(self):
             self.c = Config('https://qr.invalid/lookup', 'https://game.invalid/api/',
-                            'A63E01ZZZZZ', 'MAID', b'Q'*32, b'synthetic-salt', bytes(range(32)),
+                            'A63E01ZZZZZ', 'GAMEID', b'Q'*32, b'synthetic-salt', bytes(range(32)),
                             bytes(range(16)), 'fixture', 'application/json', {'Content-Type': 'application/json'})
             self.codec = Codec(self.c.aes_key, self.c.aes_iv)
             self.inputs = LoginInputs(1, 2, 'synthetic-identity')

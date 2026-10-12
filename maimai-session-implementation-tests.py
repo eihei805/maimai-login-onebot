@@ -20,7 +20,7 @@ m = live.m
 class Tests(unittest.TestCase):
     def setUp(self):
         self.c = m.Config('https://game.invalid/qr', 'https://game.invalid/api/',
-                          'A63E01ZZZZZ', 'MAID', b'Q'*32, b'fixture', bytes(range(32)),
+                          'A63E01ZZZZZ', 'GAMEID', b'Q'*32, b'fixture', bytes(range(32)),
                           bytes(range(16)), 'fixture', 'application/json', {})
         self.codec = m.Codec(self.c.aes_key, self.c.aes_iv)
         self.qr = 'SGWCMAID'+'X'*12+'A'*64
