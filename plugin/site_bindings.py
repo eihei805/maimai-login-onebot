@@ -264,6 +264,39 @@ class SiteBindings:
             send(int(qq), '凭据未保存：令牌格式无效或本地存储不可用。')
         return True
 
+    # Fixed Chinese labels for blocked causes. Never the raw internal code.
+    _BLOCK_LABELS = {'incomplete_fetch': '取分未完整',
+                     'invalid_scores_or_catalog': '成绩或曲库校验未通过',
+                     'invalid_credentials': '上传凭据无效'}
+
+    @staticmethod
+    def _skip_summary(outcome) -> str:
+        """Fixed-label summary of skipped rows. Never echoes titles, IDs or bodies.
+
+        Both sites share one conversion pass, so the same skip set is reported
+        once rather than counted per site.
+        """
+        if not isinstance(outcome, dict):
+            return ''
+        best = None
+        for site in ('fish', 'lxns'):
+            item = outcome.get(site)
+            if not isinstance(item, dict):
+                continue
+            detailed = item.get('skipped_reasons')
+            count = item.get('skipped_rows')
+            if not isinstance(detailed, dict) or type(count) is not int or count <= 0:
+                continue
+            if best is None or count > best[1]:
+                best = (detailed, count)
+        if best is None:
+            return ''
+        reasons = ['%s %d' % (label, value) for label, value in best[0].items()
+                   if isinstance(label, str) and type(value) is int and value > 0]
+        if not reasons:
+            return ''
+        return ' 已跳过 %d 行（%s）。' % (best[1], '、'.join(reasons))
+
     def upload_callback(self, result, send) -> None:
         """QRSync callback, using only an explicitly injected upload adapter."""
         qq = _qq(result.requester)
@@ -297,8 +330,13 @@ class SiteBindings:
             for site, label in (('fish', '水鱼'), ('lxns', '落雪')):
                 item = outcome.get(site, {}) if isinstance(outcome, dict) else {}
                 state = item.get('state') if isinstance(item, dict) else None
-                parts.append(label + '：' + labels.get(state, '结果未确认'))
-            send(int(qq), '上传结果：' + '，'.join(parts) + '。')
+                text = label + '：' + labels.get(state, '结果未确认')
+                if state == 'blocked' and isinstance(item, dict):
+                    cause = self._BLOCK_LABELS.get(item.get('reason'))
+                    if cause:
+                        text += '（' + cause + '）'
+                parts.append(text)
+            send(int(qq), '上传结果：' + '，'.join(parts) + '。' + self._skip_summary(outcome))
         except Exception:
             send(int(qq), '取分已完成，但上传未完成；请检查站点后再重试。')
 

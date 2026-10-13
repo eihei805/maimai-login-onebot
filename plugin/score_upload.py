@@ -15,6 +15,33 @@ FISH = 'https://www.diving-fish.com/api/maimaidxprober/player/'
 LXNS = 'https://maimai.lxns.net/api/v0/'
 MAX_ROWS = 10000
 MAX_BYTES = 8 * 1024 * 1024
+# Real public catalogs carry utage IDs far above 99999 (observed max 161852).
+# These bounds only reject impossible values; identity still comes from the catalog.
+MAX_MUSIC_ID = 999999
+MAX_LXNS_ID = 999999
+# Row-level conversion failures are skipped and counted instead of failing the
+# whole batch. They never invent IDs or fall back to modulo guessing.
+SKIPPABLE = frozenset({
+    'invalid_play_count', 'invalid_music_id', 'unsupported_difficulty',
+    'invalid_achievement', 'invalid_dx_score', 'unknown_or_ambiguous_music_id',
+    'unknown_chart', 'ambiguous_title', 'duplicate_chart',
+    'dx_score_exceeds_chart', 'unknown_or_ambiguous_lxns_chart', 'invalid_lxns_id',
+})
+# User-facing fixed labels for skipped rows. No titles, IDs or upstream bodies.
+SKIP_LABELS = {
+    'unsupported_difficulty': '不支持的难度',
+    'unknown_or_ambiguous_music_id': '曲目未能唯一匹配',
+    'unknown_chart': '谱面不存在',
+    'ambiguous_title': '曲名歧义',
+    'duplicate_chart': '重复谱面',
+    'unknown_or_ambiguous_lxns_chart': '落雪谱面未能唯一匹配',
+    'dx_score_exceeds_chart': 'DX 分超出谱面',
+    'invalid_play_count': '场次字段无效',
+    'invalid_music_id': '曲目编号无效',
+    'invalid_achievement': '成绩字段无效',
+    'invalid_dx_score': 'DX 分字段无效',
+    'invalid_lxns_id': '落雪编号无效',
+}
 FC = ('', 'fc', 'fcp', 'ap', 'app')
 FS = ('', 'sync', 'fs', 'fsp', 'fsd', 'fsdp')
 # DLL constants plus scoring branches (see evidence references in docs).
@@ -37,6 +64,8 @@ class Prepared:
     fish: list[dict] = field(repr=False)
     lxns: list[dict] = field(repr=False)
     omitted_badges: int = 0
+    skipped_rows: int = 0
+    skipped_reasons: dict = field(default_factory=dict, repr=False)
 
 
 def _integer(value, low, high, code):
@@ -68,55 +97,63 @@ def prepare_scores(rows, fish_catalog, lxns_catalog):
             native.setdefault(sid, []).append(song)
         except (KeyError, TypeError, ValueError):
             raise UploadError('invalid_catalog') from None
-    fish, lxns, seen, omitted = [], [], set(), 0
+    fish, lxns, seen, omitted, skipped = [], [], set(), 0, {}
     for row in rows:
         if not isinstance(row, dict):
             raise UploadError('invalid_row')
-        if 'playCount' in row:
-            plays = _integer(row['playCount'], 0, 2**31-1, 'invalid_play_count')
-            if plays == 0: continue
-        sid = _integer(row.get('musicId'), 1, 99999, 'invalid_music_id')
-        level = _integer(row.get('level'), 0, 4, 'unsupported_difficulty')
-        achievement = _integer(row.get('achievement'), 0, 1010000, 'invalid_achievement') / 10000.0
-        dx = _integer(row.get('deluxscoreMax'), 0, 1000000, 'invalid_dx_score')
-        matches = native.get(sid, [])
-        if len(matches) != 1:
-            raise UploadError('unknown_or_ambiguous_music_id')
-        song = matches[0]
-        title, kind = song.get('title'), song['type']
-        if not isinstance(title, str) or not title or level >= len(song.get('charts', [])):
-            raise UploadError('unknown_chart')
-        # Fish's write endpoint resolves title/type, so reject title collisions too.
-        if sum(s.get('title') == title and s.get('type') == kind for s in fish_catalog) != 1:
-            raise UploadError('ambiguous_title')
-        chart = song['charts'][level]
-        notes = chart.get('notes')
-        if isinstance(notes, list) and notes and all(type(n) is int and n >= 0 for n in notes):
-            if dx > 3 * sum(notes):
-                raise UploadError('dx_score_exceeds_chart')
-        key = (sid, level)
-        if key in seen:
-            raise UploadError('duplicate_chart')
+        try:
+            if 'playCount' in row:
+                if _integer(row['playCount'], 0, 2**31-1, 'invalid_play_count') == 0:
+                    continue
+            sid = _integer(row.get('musicId'), 1, MAX_MUSIC_ID, 'invalid_music_id')
+            level = _integer(row.get('level'), 0, 4, 'unsupported_difficulty')
+            achievement = _integer(row.get('achievement'), 0, 1010000, 'invalid_achievement') / 10000.0
+            dx = _integer(row.get('deluxscoreMax'), 0, 1000000, 'invalid_dx_score')
+            matches = native.get(sid, [])
+            if len(matches) != 1:
+                raise UploadError('unknown_or_ambiguous_music_id')
+            song = matches[0]
+            title, kind = song.get('title'), song['type']
+            if not isinstance(title, str) or not title or level >= len(song.get('charts', [])):
+                raise UploadError('unknown_chart')
+            # Fish's write endpoint resolves title/type, so reject title collisions too.
+            if sum(s.get('title') == title and s.get('type') == kind for s in fish_catalog) != 1:
+                raise UploadError('ambiguous_title')
+            chart = song['charts'][level]
+            notes = chart.get('notes')
+            if isinstance(notes, list) and notes and all(type(n) is int and n >= 0 for n in notes):
+                if dx > 3 * sum(notes):
+                    raise UploadError('dx_score_exceeds_chart')
+            key = (sid, level)
+            if key in seen:
+                raise UploadError('duplicate_chart')
+            chart_type = {'SD': 'standard', 'DX': 'dx'}[kind]
+            candidates = [s for s in lxns_catalog if s.get('title') == title and any(
+                d.get('difficulty') == level for d in s.get('difficulties', {}).get(chart_type, []))]
+            if len(candidates) != 1:
+                raise UploadError('unknown_or_ambiguous_lxns_chart')
+            lxid = _integer(candidates[0].get('id'), 1, MAX_LXNS_ID, 'invalid_lxns_id')
+            badges = {}
+            for source, dest, mapping in [('comboStatus', 'fc', COMBO), ('syncStatus', 'fs', SYNC)]:
+                value = row.get(source)
+                if type(value) is int and value in mapping:
+                    if mapping[value]: badges[dest] = mapping[value]
+                else:
+                    # Unknown/unsupported native optional flags are deliberately omitted;
+                    # the pre-write read/merge preserves any existing site badge.
+                    omitted += 1
+        except UploadError as exc:
+            code = str(exc)
+            if code not in SKIPPABLE:
+                raise
+            skip_code = SKIP_LABELS.get(code, code)
+            skipped[skip_code] = skipped.get(skip_code, 0) + 1
+            continue
         seen.add(key)
-        chart_type = {'SD': 'standard', 'DX': 'dx'}[kind]
-        candidates = [s for s in lxns_catalog if s.get('title') == title and any(
-            d.get('difficulty') == level for d in s.get('difficulties', {}).get(chart_type, []))]
-        if len(candidates) != 1:
-            raise UploadError('unknown_or_ambiguous_lxns_chart')
-        lxid = _integer(candidates[0].get('id'), 1, 9999, 'invalid_lxns_id')
-        badges = {}
-        for source, dest, mapping in [('comboStatus', 'fc', COMBO), ('syncStatus', 'fs', SYNC)]:
-            value = row.get(source)
-            if type(value) is int and value in mapping:
-                if mapping[value]: badges[dest] = mapping[value]
-            else:
-                # Unknown/unsupported native optional flags are deliberately omitted;
-                # the pre-write read/merge preserves any existing site badge.
-                omitted += 1
         fish.append(dict(title=title, type=kind, level_index=level, achievements=achievement, dxScore=dx, **badges))
         lxns.append(dict(id=lxid, type=chart_type, level_index=level, achievements=achievement, dx_score=dx, **badges))
     if not fish: raise UploadError('no_played_scores')
-    return Prepared(fish, lxns, omitted)
+    return Prepared(fish, lxns, omitted, sum(skipped.values()), skipped)
 
 
 def _allowed(method, url):
@@ -262,7 +299,9 @@ def upload_scores(rows, fish_catalog, lxns_catalog, credentials, *, complete=Fal
                 body = _merge(prepared.lxns, old, site)
                 _call(transport, 'POST', url, headers, {'scores': body})
             result[site] = {'state': 'accepted_unverified', 'submitted': len(body),
-                            'requires_readback': True, 'omitted_badges': prepared.omitted_badges}
+                            'requires_readback': True, 'omitted_badges': prepared.omitted_badges,
+                            'skipped_rows': prepared.skipped_rows,
+                            'skipped_reasons': dict(prepared.skipped_reasons)}
         except UploadError as exc:
             result[site] = {'state': 'failed', 'reason': str(exc), 'submitted': 0}
     return result

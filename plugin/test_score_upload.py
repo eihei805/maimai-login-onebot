@@ -50,8 +50,37 @@ class Conversion(unittest.TestCase):
             for value in values:
                 with self.subTest(key=key, value=value), self.assertRaises(u.UploadError):
                     u.prepare_scores([dict(ROW, **{key: value})], FISH, LXNS)
-        for rows in [[], [ROW, ROW], None]:
+        for rows in [[], None]:
             with self.assertRaises(u.UploadError): u.prepare_scores(rows, FISH, LXNS)
+        # Duplicate charts are a row-level failure: the first wins, the rest are
+        # skipped and counted instead of discarding the whole batch.
+        duplicate = u.prepare_scores([ROW, ROW], FISH, LXNS)
+        self.assertEqual((len(duplicate.fish), duplicate.skipped_rows), (1, 1))
+        self.assertEqual(duplicate.skipped_reasons, {'重复谱面': 1})
+    def test_utage_and_high_ids_are_skipped_not_fatal(self):
+        # Real catalogs carry utage charts above 99999 (observed max 161852) whose
+        # difficulty index is 10, i.e. outside the playable 0..4 range.
+        utage = dict(ROW, musicId=10008, level=10)
+        p = u.prepare_scores([ROW, utage], FISH, LXNS)
+        self.assertEqual((len(p.fish), p.skipped_rows), (1, 1))
+        self.assertEqual(p.skipped_reasons, {'不支持的难度': 1})
+        # A high ID bound no longer rejects an otherwise valid row by itself.
+        FISH_HIGH = [{'id': '111359', 'title': 'High', 'type': 'DX', 'charts': [{'notes': [100, 0, 0, 0]}]}]
+        LXNS_HIGH = [{'id': 111359, 'title': 'High', 'difficulties': {'dx': [{'difficulty': 0}]}}]
+        high = u.prepare_scores([dict(ROW, musicId=111359, level=0)], FISH_HIGH, LXNS_HIGH)
+        self.assertEqual((len(high.fish), high.skipped_rows), (1, 0))
+        self.assertEqual(high.fish[0]['title'], 'High')
+    def test_unmatchable_rows_report_fixed_labels_only(self):
+        # Unknown songs must be skipped with a fixed Chinese label; no title or ID echo.
+        p = u.prepare_scores([ROW, dict(ROW, musicId=999999)], FISH, LXNS)
+        self.assertEqual((len(p.fish), p.skipped_rows), (1, 1))
+        self.assertEqual(p.skipped_reasons, {'曲目未能唯一匹配': 1})
+        self.assertNotIn('999999', str(p.skipped_reasons))
+    def test_all_rows_skipped_is_blocked(self):
+        # Nothing convertible left must still fail closed rather than upload an empty batch.
+        with self.assertRaises(u.UploadError) as caught:
+            u.prepare_scores([dict(ROW, musicId=999999), dict(ROW, level=10)], FISH, LXNS)
+        self.assertEqual(str(caught.exception), 'no_played_scores')
     def test_no_modulo_no_title_guess(self):
         with self.assertRaises(u.UploadError): u.prepare_scores([ROW], FISH[:1], LXNS)
         with self.assertRaises(u.UploadError): u.prepare_scores([ROW], FISH, LXNS*2)
