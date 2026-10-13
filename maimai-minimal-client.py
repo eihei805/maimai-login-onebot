@@ -272,6 +272,17 @@ class Client:
         self._login_inputs = None
         return True
 
+    def probe(self, session):
+        # Read-only liveness check: one page, nothing uploaded or written back.
+        self._current(session)
+        reply = self._game('GetUserMusicApi', {'userId': session.user_id, 'nextIndex': 0,
+                           'maxCount': 1}, session.user_agent_identity)
+        if 'returnCode' in reply:
+            require(type(reply['returnCode']) is int and reply['returnCode'] == 1, 'Probe returnCode rejected')
+        require(integer(reply.get('nextIndex')) and type(reply.get('userMusicList')) is list,
+                'Invalid probe envelope')
+        return True
+
     def scores(self, session, page_budget=512):
         self._current(session)
         require(type(page_budget) is int and page_budget > 0, 'Positive page budget required')
@@ -319,7 +330,7 @@ def self_test():
     class Tests(unittest.TestCase):
         def setUp(self):
             self.c = Config('https://qr.invalid/lookup', 'https://game.invalid/api/',
-                            'A63E01ZZZZZ', 'GAMEID', b'Q'*32, b'synthetic-salt', bytes(range(32)),
+                            'A63E01ZZZZZ', 'MAID', b'Q'*32, b'synthetic-salt', bytes(range(32)),
                             bytes(range(16)), 'fixture', 'application/json', {'Content-Type': 'application/json'})
             self.codec = Codec(self.c.aes_key, self.c.aes_iv)
             self.inputs = LoginInputs(1, 2, 'synthetic-identity')

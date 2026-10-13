@@ -175,8 +175,12 @@ class LifecycleTests(unittest.TestCase):
     def test_cleanup_entry_archives_unknown_but_logout_is_unchanged(self):
         sent=[]; send=lambda uid,text: sent.append(text)
         closer=Mock(side_effect=RuntimeError('must-not-call'))
-        sync=q.QRSync(self.private,logout_runner=closer,runner=Mock(side_effect=RuntimeError('must-not-call')),archive=self.private/'archive')
+        prober=Mock(side_effect=RuntimeError('must-not-call'))
+        sync=q.QRSync(self.private,logout_runner=closer,probe_runner=prober,runner=Mock(side_effect=RuntimeError('must-not-call')),archive=self.private/'archive')
         archive=self.private/'archive'  # parent is the 0700 temp dir
+        def cleanup(text):
+            sent.clear(); sync.handle(self.event(text),send)
+            self.assertTrue(sync.gate.acquire(timeout=2)); sync.gate.release()
         sync._consent(USER,True)
         # (a) /logout keeps its original contract: it never archives anything, it
         # only ever asks the game runner, and an unconfirmed result retains the
@@ -191,9 +195,10 @@ class LifecycleTests(unittest.TestCase):
         sent.clear(); sync.handle(self.event('/login '+QR),send)
         self.assertIn('已有保留或状态未确认的会话',sent[-1])  # still blocked, as before
         # (b) the explicit entry point archives the sessionless record and unblocks
-        sent.clear(); sync.handle(self.event('/清理会话'),send)
+        cleanup('/清理会话')
         self.assertIn('未确认记录已归档',sent[-1]); self.assertNotIn('已确认游戏登出',sent[-1])
         self.assertFalse(live.session_path(USER).exists())
+        self.assertEqual(prober.call_count,0)  # unknown never probes the network
         archived=sorted(archive.glob('orphan-session-'+USER+'*.json'))
         self.assertEqual(len(archived),1)
         self.assertEqual(archived[0].stat().st_mode & 0o777,0o600)
@@ -203,17 +208,50 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(any('已有保留或状态未确认的会话' in t for t in sent))
         self.assertTrue(sync.gate.acquire(timeout=2)); sync.gate.release()
         live.session_path(USER).unlink(missing_ok=True)
-        # (c) the explicit entry never touches an active session
-        self.committed(); before=live.session_path(USER).read_bytes(); sent.clear()
-        sync.handle(self.event('/清理会话'),send)
-        self.assertIn('请先 /logout',sent[-1])
+        # (c) an active session that the game still knows is never cleaned
+        self.committed(); before=live.session_path(USER).read_bytes()
+        prober.side_effect=None; prober.return_value='alive'
+        cleanup('/清理会话')
+        self.assertIn('仍然有效，请先 /logout',sent[-1])
         self.assertEqual(live.session_path(USER).read_bytes(),before)
         self.assertEqual(closer.call_count,1)  # still only the step-(a) attempt
-        self.assertEqual(len(list(archive.glob('orphan-session-*.json'))),1)
-        # (d) nothing to clean
-        live.session_path(USER).unlink()
-        sent.clear(); sync.handle(self.event('/清理会话'),send)
+        self.assertEqual(prober.call_count,1)
+        # (d) an active session the game no longer knows IS archived (proven dead).
+        #     That is the production deadlock this entry point exists to break.
+        prober.return_value='dead'
+        cleanup('/清理会话')
+        self.assertIn('已失效，已归档',sent[-1]); self.assertNotIn('已确认游戏登出',sent[-1])
+        self.assertFalse(live.session_path(USER).exists())
+        expired=sorted(archive.glob('expired-session-'+USER+'*.json'))
+        self.assertEqual(len(expired),1)
+        self.assertEqual(expired[0].stat().st_mode & 0o777,0o600)
+        self.assertNotIn('请先 /logout',sent[-1])
+        # (e) an unprovable probe (network trouble) cleans nothing
+        self.committed(); before=live.session_path(USER).read_bytes()
+        prober.return_value='indeterminate'
+        cleanup('/清理会话')
+        self.assertIn('暂时无法确认会话状态',sent[-1])
+        self.assertEqual(live.session_path(USER).read_bytes(),before)
+        self.assertEqual(len(list(archive.glob('expired-session-*.json'))),1)
+        # (f) nothing to clean
+        live.session_path(USER).unlink(missing_ok=True)
+        cleanup('/清理会话')
         self.assertIn('没有本机器人保留的会话记录',sent[-1])
+    def test_reap_expired_and_probe_refuse_wrong_state(self):
+        archive=self.private/'archive'
+        self.assertFalse(q.reap_expired(USER,private=self.private,archive=archive)['reaped'])
+        live.write_session(USER,{'state':'unknown'},reserve=True)
+        out=q.reap_expired(USER,private=self.private,archive=archive)
+        self.assertFalse(out['reaped']); self.assertEqual(out['reason'],'state_unknown')
+        self.assertTrue(live.session_path(USER).exists())
+        live.session_path(USER).unlink()
+        # probe is refused unless the record is exactly a valid active one
+        for setup,state in (('none',None),('unknown','unknown'),('closed','closed')):
+            live.session_path(USER).unlink(missing_ok=True)
+            if state: live.write_session(USER,{'state':state},reserve=True)
+            with self.assertRaises(q.CaptureError):
+                q.probe(USER,private=self.private,client='/definitely/not/a/client.py')
+            live.session_path(USER).unlink(missing_ok=True)
     def test_reap_orphan_refuses_non_unknown_and_bad_input(self):
         archive=self.private/'archive'
         self.assertFalse(q.reap_orphan(USER,private=self.private,archive=archive)['reaped'])

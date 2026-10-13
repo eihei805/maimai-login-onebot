@@ -339,6 +339,7 @@ def main():
     mode.add_argument('--self-test', action='store_true')
     mode.add_argument('--live', action='store_true')
     mode.add_argument('--logout-session', action='store_true')
+    mode.add_argument('--probe-session', action='store_true')
     qr = parser.add_mutually_exclusive_group()
     qr.add_argument('--qr-file', type=Path)
     qr.add_argument('--qr-stdin', action='store_true')
@@ -353,7 +354,7 @@ def main():
         self_test()
         return 0
     c, raw = load_config()
-    blocked = blockers(c, raw, args.allow_http_qr or args.logout_session)
+    blocked = blockers(c, raw, args.allow_http_qr or args.logout_session or args.probe_session)
     if args.check or blocked:
         print(json.dumps({'status':'blocked' if blocked else 'ready', 'blockers':blocked, 'requests_live':0}))
         return 2 if blocked else 0
@@ -367,6 +368,33 @@ def main():
             print(json.dumps({'status':'failed', 'logout':'unconfirmed'}))
             return 3
         print(json.dumps({'status':'closed', 'logout':'confirmed'}))
+        return 0
+    if args.probe_session:
+        if not args.session_owner or args.qr_file or args.qr_stdin or args.logout:
+            raise SafeFailure('probe_inputs_rejected')
+        # Read-only liveness probe. Never writes the record, never logs out.
+        dead = frozenset(('Empty HTTP body', 'Empty decoded response', 'Invalid JSON response'))
+        transport = Transport(c, total=60)
+        try:
+            client = m.Client(c, transport)
+            session = restore_session(args.session_owner, client, transport)
+            client.probe(session)
+        except m.ProtocolError as exc:
+            # The game answered (HTTP 200, valid AES block) but carried no usable
+            # session. That is read-only proof this session is gone.
+            if str(exc) in dead:
+                print(json.dumps({'status':'dead', 'probe':str(exc)}))
+                return 4
+            print(json.dumps({'status':'indeterminate', 'probe':str(exc)}))
+            return 5
+        except SafeFailure as exc:
+            # Network/TLS/HTTP-level trouble proves nothing about the session.
+            print(json.dumps({'status':'indeterminate', 'probe':str(exc)}))
+            return 5
+        except Exception:
+            print(json.dumps({'status':'indeterminate', 'probe':'unknown'}))
+            return 5
+        print(json.dumps({'status':'alive', 'probe':'ok'}))
         return 0
     if not args.live or not (args.qr_file or args.qr_stdin) or not 1 <= args.page_budget <= 512 or (args.session_owner and (args.logout or not args.qr_stdin)):
         raise SafeFailure('live_inputs_required')

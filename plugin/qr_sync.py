@@ -26,7 +26,7 @@ CONSENT = ('取分会将二维码发送到游戏的原始 HTTP 接口（未加�
            '并登录游戏读取成绩；/login 保留会话直到 /logout，/取分 自动尝试登出。仅发送你有权使用的二维码。'
            '如接受，请私聊发送 /同意HTTP取分，然后重新发送 /login <SGWCMAID二维码文本>。'
            '可用 /撤销HTTP取分 撤回后续取分授权；取分结果会私密保存在服务器供后续上传使用。')
-HELP = '私聊用法：/login <SGWCMAID二维码文本> 登录取分并保留会话，/logout 实际登出；/取分 <SGWCMAID二维码文本> 或直接发送二维码文本取分后自动登出；/清理会话 用于归档「登录未成功」的未确认记录。仅支持文本。'
+HELP = '私聊用法：/login <SGWCMAID二维码文本> 登录取分并保留会话，/logout 实际登出；/取分 <SGWCMAID二维码文本> 或直接发送二维码文本取分后自动登出；/清理会话 用于归档可确认失效的记录（登录未成功，或游戏侧已不再认识的会话）。仅支持文本。'
 
 
 class CaptureError(RuntimeError):
@@ -180,6 +180,21 @@ def _private_backup_dir(path=ARCHIVE):
     return path
 
 
+def _archive_record(user, *, private, archive, prefix, stamp):
+    """Rename a record into the archive. Never deletes; never touches the game."""
+    destination = _private_backup_dir(ARCHIVE if archive is None else archive) / (prefix + user + '-' + stamp + '.json')
+    source = session_file(user, private)
+    if destination.exists():
+        raise CaptureError('orphan_archive_collision')
+    os.rename(source, destination)
+    os.chmod(destination, 0o600)
+    return str(destination)
+
+
+def _stamp(now=None):
+    return time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(now if now is not None else time.time()))
+
+
 def reap_orphan(user, *, private=PRIVATE, archive=None, now=None):
     """Archive a record that carries no game session. Never fakes a logout.
 
@@ -196,15 +211,47 @@ def reap_orphan(user, *, private=PRIVATE, archive=None, now=None):
         raise CaptureError('session_record_unreadable')
     if record.get('state') != 'unknown':
         return {'reaped': False, 'reason': 'state_' + record['state']}
-    archive = ARCHIVE if archive is None else archive
-    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(now if now is not None else time.time()))
-    destination = _private_backup_dir(archive) / ('orphan-session-' + user + '-' + stamp + '.json')
-    source = session_file(user, private)
-    if destination.exists():
-        raise CaptureError('orphan_archive_collision')
-    os.rename(source, destination)
-    os.chmod(destination, 0o600)
-    return {'reaped': True, 'reason': 'unknown_without_session', 'archive': str(destination)}
+    destination = _archive_record(user, private=private, archive=archive,
+                                  prefix='orphan-session-', stamp=_stamp(now))
+    return {'reaped': True, 'reason': 'unknown_without_session', 'archive': destination}
+
+
+def probe(user, *, private=PRIVATE, client=CLIENT, timeout=75):
+    """Read-only liveness probe for a retained session: 'alive'/'dead'/'indeterminate'.
+
+    A single GetUserMusicApi page, nothing written back. 'dead' means the game
+    answered with a well-formed empty envelope, i.e. it no longer knows this
+    session; network/TLS/HTTP trouble is 'indeterminate' and proves nothing.
+    """
+    private_directory(private)
+    record = session_record(user, private)
+    if record is None or record.get('owner') != user or record.get('version') != 1 or record.get('state') != 'active':
+        raise CaptureError('probe_unavailable')
+    completed = subprocess.run([sys.executable, str(client), '--probe-session', '--session-owner', user],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        timeout=timeout, check=False, shell=False)
+    return {0: 'alive', 4: 'dead'}.get(completed.returncode, 'indeterminate')
+
+
+def reap_expired(user, *, private=PRIVATE, archive=None, now=None):
+    """Archive an `active` record only after the caller proved it is dead.
+
+    The caller must have run `probe` and observed 'dead'. No logout is sent and
+    no `closed` state is written: the game already dropped the session, so the
+    local record is the stale part. Renamed, never deleted.
+    """
+    private_directory(private)
+    record = session_record(user, private)
+    if record is None:
+        return {'reaped': False, 'reason': 'no_record'}
+    if record.get('owner') != user or record.get('version') != 1 or record.get('state') not in ('unknown', 'active', 'closed'):
+        raise CaptureError('session_record_unreadable')
+    if record.get('state') != 'active':
+        return {'reaped': False, 'reason': 'state_' + record['state']}
+    destination = _archive_record(user, private=private, archive=archive,
+                                  prefix='expired-session-', stamp=_stamp(now))
+    return {'reaped': True, 'reason': 'session_expired', 'archive': destination}
+
 
 def logout(user, *, private=PRIVATE, client=CLIENT, timeout=75):
     private_directory(private)
@@ -221,10 +268,11 @@ def logout(user, *, private=PRIVATE, client=CLIENT, timeout=75):
 
 class QRSync:
     def __init__(self, private: Path = PRIVATE, *, runner=capture, cooldown=60, on_result=None,
-                 before_capture=None, logout_runner=logout, archive=None):
+                 before_capture=None, logout_runner=logout, archive=None, probe_runner=probe):
         self.private = private
         self.runner = runner
         self.logout_runner = logout_runner
+        self.probe_runner = probe_runner
         self.archive = archive
         self.cooldown = cooldown
         self.on_result = on_result
@@ -282,28 +330,16 @@ class QRSync:
                     raise
                 return True
             if text == '/清理会话':
-                # Only ever archives a record that provably holds no game session.
+                # Only ever archives a record the bot can prove holds no game session.
                 if not self.gate.acquire(blocking=False):
                     send(int(user), '取分或登出正在进行，请稍后重试。')
                     return True
                 try:
-                    if not session_exists(user, self.private):
-                        send(int(user), '没有本机器人保留的会话记录。')
-                        return True
-                    state = (session_record(user, self.private) or {}).get('state')
-                    if state == 'unknown':
-                        outcome = reap_orphan(user, private=self.private, archive=self.archive)
-                        send(int(user), '未确认记录已归档（此前登录未成功，没有会话需要登出）；可以重新 /login。'
-                             if outcome.get('reaped') else
-                             '记录状态未变，请稍后重试或联系管理员。')
-                    elif state == 'active':
-                        send(int(user), '存在已保留的游戏会话，请先 /logout；未做任何清理。')
-                    else:
-                        send(int(user), '记录需管理员处理；未做任何清理。')
+                    worker = threading.Thread(target=self._cleanup_work, args=(user, send), daemon=True, name='qr-cleanup')
+                    worker.start()
                 except Exception:
-                    send(int(user), '清理暂不可用，请稍后重试。')
-                finally:
                     self.gate.release()
+                    raise
                 return True
             if text in ('/同意HTTP取分', '/撤销HTTP取分'):
                 accepted = text == '/同意HTTP取分'
@@ -364,6 +400,38 @@ class QRSync:
             send(int(user), '已确认游戏登出。')
         except Exception:
             send(int(user), '登出未确认，会话记录保留；请检查游戏状态后重试 /logout。')
+        finally:
+            self.gate.release()
+
+    def _cleanup_work(self, user, send):
+        try:
+            if not session_exists(user, self.private):
+                send(int(user), '没有本机器人保留的会话记录。')
+                return
+            state = (session_record(user, self.private) or {}).get('state')
+            if state == 'unknown':
+                outcome = reap_orphan(user, private=self.private, archive=self.archive)
+                send(int(user), '未确认记录已归档（此前登录未成功，没有会话需要登出）；可以重新 /login。'
+                     if outcome.get('reaped') else
+                     '记录状态未变，请稍后重试或联系管理员。')
+                return
+            if state != 'active':
+                send(int(user), '记录需管理员处理；未做任何清理。')
+                return
+            # `active` is only archived on positive read-only proof that the game
+            # no longer knows this session. Network trouble proves nothing.
+            liveness = self.probe_runner(user, private=self.private)
+            if liveness == 'dead':
+                outcome = reap_expired(user, private=self.private, archive=self.archive)
+                send(int(user), '该会话在游戏侧已失效，已归档记录；可以重新 /login。'
+                     if outcome.get('reaped') else
+                     '记录状态未变，请稍后重试或联系管理员。')
+            elif liveness == 'alive':
+                send(int(user), '会话在游戏侧仍然有效，请先 /logout；未做任何清理。')
+            else:
+                send(int(user), '暂时无法确认会话状态，未做任何清理；请稍后重试。')
+        except Exception:
+            send(int(user), '清理暂不可用，请稍后重试。')
         finally:
             self.gate.release()
 
