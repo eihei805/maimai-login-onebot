@@ -7,6 +7,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import contextlib
+import fcntl
+import math
+import functools
 import os
 from pathlib import Path
 import re
@@ -23,10 +27,10 @@ CAPTURE_GATE = threading.BoundedSemaphore(1)
 FIELDS = ('musicId', 'level', 'playCount', 'achievement', 'deluxscoreMax',
           'comboStatus', 'syncStatus', 'scoreRank', 'extNum1')
 CONSENT = ('取分会将二维码发送到游戏的原始 HTTP 接口（未加密，可能被网络中间人读取），'
-           '并登录游戏读取成绩；/login 保留会话直到 /logout，/取分 自动尝试登出。仅发送你有权使用的二维码。'
+           '并登录游戏读取成绩；所有取分均保留会话，登录成功 60 秒后可 /logout，14 分钟后自动尝试登出。仅发送你有权使用的二维码。'
            '如接受，请私聊发送 /同意HTTP取分，然后重新发送 /login <SGWCMAID二维码文本>。'
            '可用 /撤销HTTP取分 撤回后续取分授权；取分结果会私密保存在服务器供后续上传使用。')
-HELP = '私聊用法：/login <SGWCMAID二维码文本> 登录取分并保留会话，/logout 实际登出；/取分 <SGWCMAID二维码文本> 或直接发送二维码文本取分后自动登出；/清理会话 用于归档可确认失效的记录（登录未成功，或游戏侧已不再认识的会话）。仅支持文本。'
+HELP = '私聊用法：/login 或 /取分 <SGWCMAID二维码文本>，或直接发送二维码文本：取分并保留会话；登录成功 60 秒后可 /logout，14 分钟后自动尝试正常登出，失败保留记录并通知，可 /logout 重试。/清理会话 归档可确认失效的记录。仅支持文本。'
 
 
 class CaptureError(RuntimeError):
@@ -89,6 +93,42 @@ def read_private(path: Path, limit: int = 16 * 1024 * 1024):
     return json.loads(raw)
 
 
+_session_local = threading.local()
+
+@contextlib.contextmanager
+def session_lock(private=PRIVATE):
+    private_directory(private)
+    fd = os.open(private / '.session.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        s = os.fstat(fd)
+        if not stat.S_ISREG(s.st_mode) or s.st_uid != os.getuid() or s.st_nlink != 1 or stat.S_IMODE(s.st_mode) != 0o600:
+            raise CaptureError('session_lock_permissions')
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        _session_local.fd = fd
+        yield
+    finally:
+        _session_local.fd = None
+        os.close(fd)
+
+def locked_subprocess_args():
+    fd = getattr(_session_local, 'fd', None)
+    if fd is None:
+        return {}
+    return {'pass_fds': (fd,), 'env': dict(os.environ, MAIMAI_SESSION_LOCK_FD=str(fd))}
+
+def serialized_worker(fn):
+    @functools.wraps(fn)
+    def wrapped(self, *args, **kwargs):
+        with session_lock(self.private):
+            return fn(self, *args, **kwargs)
+    return wrapped
+
+def logout_remaining(record, now=None):
+    stamp = record.get('login_success_epoch')
+    if type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp <= 0:
+        return 0
+    return max(0, math.ceil(stamp + 60 - (time.time() if now is None else now)))
+
 def capture(requester: str, qr: str, *, private: Path = PRIVATE,
             client: Path = CLIENT, timeout: int = 210, retain: bool = False) -> CaptureResult:
     """Call the live adapter with QR on stdin only. Results remain private."""
@@ -99,12 +139,12 @@ def capture(requester: str, qr: str, *, private: Path = PRIVATE,
         if session_exists(requester, private):
             raise CaptureError('session_already_owned')
         path = private / ('capture-' + uuid.uuid4().hex + '.json')
-        lifecycle = ['--session-owner', requester] if retain else ['--logout']
+        lifecycle = ['--session-owner', requester]  # Every QR entry retains its session.
         completed = subprocess.run(
             [sys.executable, str(client), '--live', '--qr-stdin', '--allow-http-qr',
              '--preload-profile', *lifecycle, '--result', str(path)],
             input=qr.encode('ascii'), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=timeout, check=False, shell=False)
+            timeout=timeout, check=False, shell=False, **locked_subprocess_args())
         if completed.returncode not in (0, 3):
             raise CaptureError('capture_failed_logout_unknown')
         data = read_private(path)
@@ -120,7 +160,7 @@ def capture(requester: str, qr: str, *, private: Path = PRIVATE,
                  'logout': 'confirmed' if summary.get('logout') == 'confirmed' else 'unconfirmed'}
         if summary.get('login') == 'not_started' and summary['status'] == 'failed':
             clean['login'] = 'not_started'
-        if retain and clean.get('login') != 'not_started':
+        if (retain or clean['logout'] != 'confirmed') and clean.get('login') != 'not_started':
             record = read_private(session_file(requester, private), 65536)
             clean['session'] = 'active' if record.get('owner') == requester and record.get('state') == 'active' and summary.get('session') == 'active' else 'unknown'
         return CaptureResult(requester, path, scores, clean)
@@ -229,7 +269,7 @@ def probe(user, *, private=PRIVATE, client=CLIENT, timeout=75):
         raise CaptureError('probe_unavailable')
     completed = subprocess.run([sys.executable, str(client), '--probe-session', '--session-owner', user],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        timeout=timeout, check=False, shell=False)
+        timeout=timeout, check=False, shell=False, **locked_subprocess_args())
     return {0: 'alive', 4: 'dead'}.get(completed.returncode, 'indeterminate')
 
 
@@ -258,9 +298,12 @@ def logout(user, *, private=PRIVATE, client=CLIENT, timeout=75):
     record = read_private(session_file(user, private), 65536)
     if record.get('owner') != user or record.get('version') != 1 or record.get('state') not in ('active', 'closed'):
         raise CaptureError('logout_unconfirmed')
+    remaining = logout_remaining(record)
+    if remaining and record.get('state') != 'closed':
+        raise CaptureError('logout_wait_' + str(remaining))
     completed = subprocess.run([sys.executable, str(client), '--logout-session', '--session-owner', user],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        timeout=timeout, check=False, shell=False)
+        timeout=timeout, check=False, shell=False, **locked_subprocess_args())
     if completed.returncode != 0 or session_exists(user, private):
         raise CaptureError('logout_unconfirmed')
     return True
@@ -349,8 +392,9 @@ class QRSync:
             if text == '/取分':
                 send(int(user), HELP + '\n' + CONSENT)
                 return True
-            retain = text.startswith(('/login ', '/绑定账号 '))
-            qr = text.split(' ', 1)[1].strip() if retain else text[3:].strip() if text.startswith('/取分 ') else text
+            retain = True
+            login_command = text.startswith(('/login ', '/绑定账号 '))
+            qr = text.split(' ', 1)[1].strip() if login_command else text[3:].strip() if text.startswith('/取分 ') else text
             if not valid_qr(qr):
                 send(int(user), HELP)
                 return True
@@ -390,19 +434,25 @@ class QRSync:
                 pass
         return True
 
+    @serialized_worker
     def _logout_work(self, user, send):
         try:
             if not session_exists(user, self.private):
                 send(int(user), '没有本机器人保留的会话；未执行游戏登出。')
                 return
+            remaining = logout_remaining(session_record(user, self.private) or {})
+            if remaining:
+                send(int(user), f'登录成功后 60 秒内不能登出；还需等待 {remaining} 秒。')
+                return
             if self.logout_runner(user, private=self.private) is not True:
                 raise CaptureError('logout_unconfirmed')
-            send(int(user), '已确认游戏登出。')
+            send(int(user), '登出接口已接受；游戏侧会话释放尚未核验，如仍提示占用，请等待游戏侧解除后再登录。')
         except Exception:
             send(int(user), '登出未确认，会话记录保留；请检查游戏状态后重试 /logout。')
         finally:
             self.gate.release()
 
+    @serialized_worker
     def _cleanup_work(self, user, send):
         try:
             if not session_exists(user, self.private):
@@ -435,7 +485,8 @@ class QRSync:
         finally:
             self.gate.release()
 
-    def _work(self, user, qr, send, context=None, retain=False):
+    @serialized_worker
+    def _work(self, user, qr, send, context=None, retain=True):
         try:
             result = self.runner(user, qr, private=self.private, **({'retain':True} if retain else {}))
             if result.requester != user:
@@ -445,9 +496,11 @@ class QRSync:
                 send(int(user), '二维码验证失败：可能为空码、已过期或验证服务异常；未进入游戏登录，无需 /logout，请重新获取二维码。')
                 return
             label = {'complete': '完成', 'partial': '部分完成', 'failed': '失败'}[result.summary['status']]
-            logout = '已确认登出' if result.summary['logout'] == 'confirmed' else '登出未确认，请检查游戏会话状态'
+            logout = '登出接口已接受，游戏侧会话释放尚未核验' if result.summary['logout'] == 'confirmed' else '登出未确认，请检查游戏会话状态'
             if retain:
-                logout = '会话已保留，使用 /logout 登出' if result.summary.get('session') == 'active' else '会话状态未确认，请检查游戏状态；新登录已阻止'
+                logout = '会话已保留；登录成功 60 秒后可 /logout，14 分钟后自动尝试登出' if result.summary.get('session') == 'active' else '会话状态未确认，请检查游戏状态；新登录已阻止'
+            elif result.summary.get('session') == 'active':
+                logout = '登出未确认，会话记录已保留，可使用 /logout 重试；新登录已阻止'
             send(int(user), f'取分{label}：{len(result.scores)} 条成绩；{logout}。')
             if self.on_result is not None and result.summary['status'] == 'complete':
                 try:

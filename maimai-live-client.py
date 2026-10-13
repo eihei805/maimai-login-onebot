@@ -2,6 +2,9 @@
 """Opt-in live adapter for the offline session model. Never logs wire values."""
 import argparse
 import dataclasses
+import contextlib
+import fcntl
+import math
 import importlib.util
 import http.cookiejar
 import json
@@ -225,11 +228,45 @@ def read_session(owner):
         raise SafeFailure('session_owner_or_state_rejected')
     return data
 
-def persist_session(owner, client, transport):
+_owned_lock_fd = None
+
+@contextlib.contextmanager
+def session_lock():
+    global _owned_lock_fd
+    private_dir()
+    inherited = os.getenv('MAIMAI_SESSION_LOCK_FD')
+    previous_fd = _owned_lock_fd
+    shared_fd = int(inherited) if inherited else previous_fd
+    fd = os.dup(shared_fd) if shared_fd is not None else os.open(PRIVATE / '.session.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        s = os.fstat(fd)
+        if not stat.S_ISREG(s.st_mode) or s.st_uid != os.getuid() or s.st_nlink != 1 or stat.S_IMODE(s.st_mode) != 0o600:
+            raise SafeFailure('session_lock_permissions')
+        expected = (PRIVATE / '.session.lock').lstat()
+        if (s.st_dev, s.st_ino) != (expected.st_dev, expected.st_ino):
+            raise SafeFailure('session_lock_identity')
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        _owned_lock_fd = fd
+        yield
+    finally:
+        _owned_lock_fd = previous_fd
+        os.close(fd)
+
+def logout_remaining(record, now=None):
+    stamp = record.get('login_success_epoch')
+    if type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp <= 0:
+        return 0
+    return max(0, math.ceil(stamp + 60 - (time.time() if now is None else now)))
+
+def persist_session(owner, client, transport, *, login_success_epoch=None):
+    previous = read_session(owner)
+    policy = {k: previous[k] for k in ('login_success_epoch', 'auto_logout_attempt_epoch') if k in previous}
+    if login_success_epoch is not None and 'login_success_epoch' not in policy:
+        policy['login_success_epoch'] = login_success_epoch
     write_session(owner, {'state':'active', 'session':dataclasses.asdict(client.session),
         'inputs':dataclasses.asdict(client._login_inputs),
         'game_base':client.config.game_base, 'chip_id':client.config.chip_id,
-        'cookies':[vars(cookie) for cookie in transport.cookies]})
+        'cookies':[vars(cookie) for cookie in transport.cookies], **policy})
 
 def restore_session(owner, client, transport):
     data = read_session(owner)
@@ -259,7 +296,14 @@ def restore_session(owner, client, transport):
     return session
 
 def logout_owned(owner, client, transport):
+    with session_lock():
+        return _logout_owned(owner, client, transport)
+
+def _logout_owned(owner, client, transport):
     record = read_session(owner)
+    remaining = logout_remaining(record)
+    if record['state'] != 'closed' and remaining:
+        raise SafeFailure('logout_wait_' + str(remaining))
     if record['state'] == 'closed':
         # Previous logout was confirmed, but unlink failed/crashed. No replay.
         session_path(owner).unlink()
@@ -333,6 +377,14 @@ def self_test():
     print(json.dumps({'status':'synthetic_tests_passed', 'requests_live':0}))
 
 def main():
+    # All owned CLI operations share the timer/bot lock, including score reads.
+    # logout_owned takes the lock itself; avoid nested flock descriptors.
+    if '--session-owner' in sys.argv and '--logout-session' not in sys.argv:
+        with session_lock():
+            return _main()
+    return _main()
+
+def _main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--check', action='store_true')
@@ -364,6 +416,11 @@ def main():
         transport = Transport(c, total=60)
         try:
             logout_owned(args.session_owner, m.Client(c, transport), transport)
+        except SafeFailure as exc:
+            remaining = str(exc).removeprefix('logout_wait_')
+            print(json.dumps({'status':'failed', 'logout':'unconfirmed',
+                              'remaining_seconds': int(remaining) if remaining.isdigit() else 0}))
+            return 3
         except Exception:
             print(json.dumps({'status':'failed', 'logout':'unconfirmed'}))
             return 3
@@ -396,7 +453,7 @@ def main():
             return 5
         print(json.dumps({'status':'alive', 'probe':'ok'}))
         return 0
-    if not args.live or not (args.qr_file or args.qr_stdin) or not 1 <= args.page_budget <= 512 or (args.session_owner and (args.logout or not args.qr_stdin)):
+    if not args.live or not (args.qr_file or args.qr_stdin) or not 1 <= args.page_budget <= 512 or (args.session_owner and not args.qr_stdin):
         raise SafeFailure('live_inputs_required')
     # Reserve a new private result before consuming QR or contacting the server.
     if args.result.parent != PRIVATE or args.result.name in ('config.json','qr.txt') or args.result.exists():
@@ -418,8 +475,9 @@ def main():
         qr_text = qr_data.decode('ascii').rstrip('\r\n')
         client = m.Client(c, transport)
         session = client.login(qr_text, m.LoginInputs(raw['region_id'], raw['place_id'], ''))
+        login_success_epoch = time.time()  # Local epoch captured before profile/score reads.
         if args.session_owner:
-            persist_session(args.session_owner, client, transport)
+            persist_session(args.session_owner, client, transport, login_success_epoch=login_success_epoch)
             status['session'] = 'active'
         try:
             if args.preload_profile:
@@ -437,14 +495,21 @@ def main():
             raise
         finally:
             # Reached only after this client has committed a successful login.
-            if args.logout:
+            if args.logout and not args.session_owner:
                 status['logout'] = 'unconfirmed'
                 try:
-                    client.logout(session)
+                    if args.session_owner:
+                        # Keep the committed record if logout raises or the
+                        # process is interrupted; /logout can restore it.
+                        persist_session(args.session_owner, client, transport)
+                        logout_owned(args.session_owner, client, transport)
+                        status['session'] = 'none'
+                    else:
+                        client.logout(session)
+                        transport.clear_session()
                 except Exception:
                     status['logout'] = 'unconfirmed'
                 else:
-                    transport.clear_session()
                     status['logout'] = 'confirmed'
             elif args.session_owner:
                 # Persist cookies acquired during reads too; failure leaves the

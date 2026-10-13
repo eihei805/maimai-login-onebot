@@ -51,6 +51,51 @@ User=maimai
 WantedBy=multi-user.target
 ```
 
+定时退出需要额外安装下面的 service/timer，并使用与主服务相同的运行用户、私有目录和 OneBot 凭据。只启动 `plugin/main.py` 不会自动运行定时退出。
+
+`/etc/systemd/system/maimai-login-logout.service`：
+
+```ini
+[Unit]
+Description=maimai timed logout pass
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=maimai
+WorkingDirectory=/opt/maimai-login-onebot
+Environment=MAIMAI_PRIVATE_DIR=/opt/maimai-login-onebot/private
+Environment=ONEBOT_HTTP=http://127.0.0.1:3000
+Environment=ONEBOT_TOKEN_FILE=/opt/maimai-login-onebot/onebot-token
+ExecStart=/opt/maimai-login-onebot/.venv/bin/python /opt/maimai-login-onebot/plugin/timed_logout.py
+UMask=0077
+NoNewPrivileges=true
+TimeoutStartSec=300
+```
+
+`/etc/systemd/system/maimai-login-logout.timer`：
+
+```ini
+[Unit]
+Description=Check maimai logout deadlines
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=10s
+AccuracySec=1s
+Unit=maimai-login-logout.service
+
+[Install]
+WantedBy=timers.target
+```
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now maimai-login-logout.timer
+```
+
+登录成功时间和自动尝试标记存储在私有会话记录中。重启后恢复原截止时间；旧的无时间字段记录不会自动退出。满 14 分钟后在下一次扫描尝试退出，失败保留会话并通知，使用 `/logout` 手动重试。接口接受仍不代表已核验游戏侧会话释放。
+
 ## 2. 私聊完整流程
 
 依次发送（`→` 后为机器人的实际回复）：
@@ -63,7 +108,7 @@ WantedBy=multi-user.target
   • /login 或 /绑定账号 二维码文本：登录并保留会话
   • /logout：退出自己的游戏会话
   • /清理会话：归档可确认失效的记录（登录未成功，或游戏侧已不再认识的会话；不会冒充已登出）
-  • /取分 二维码文本：取分后自动登出
+  • /取分 二维码文本：取分后保留会话，登录满 60 秒可 /logout，第 14 分钟自动尝试登出
 
   【成绩同步】
   • /token：查看水鱼、落雪 Token 获取方式
@@ -81,7 +126,7 @@ WantedBy=multi-user.target
   二维码公开后请及时轮换。
 
 /login
-→ 私聊用法：/login <SGWCMAID二维码文本> 登录取分并保留会话，/logout 实际登出；/取分 <SGWCMAID二维码文本> 或直接发送二维码文本取分后自动登出。仅支持文本。
+→ 私聊用法：/login <SGWCMAID二维码文本> 登录取分并保留会话，/logout 实际登出；/取分 <SGWCMAID二维码文本> 或直接发送二维码文本取分后保留会话，登录满 60 秒可 /logout，第 14 分钟自动尝试登出。仅支持文本。
 
 /取分
 → （同上用法文本，并附加 HTTP 授权说明）
@@ -110,12 +155,12 @@ WantedBy=multi-user.target
 → 没有本机器人保留的会话；未执行游戏登出。
 ```
 
-### 不保留会话（自动登出）
+### 取分后定时登出
 
 ```text
 /取分 SGWCMAIDxxxxxxxxxxxxAAAAAAAA...
 → 正在验证二维码并尝试登录；有效性以服务端结果为准。
-→ 取分完成：800 条成绩；已确认登出。
+→ 取分完成：800 条成绩；会话已保留；登录成功 60 秒后可 /logout，14 分钟后自动尝试登出。
 ```
 
 ### 无效 / 过期二维码

@@ -119,7 +119,7 @@ class PrivateIntegration(unittest.TestCase):
         self.wait()
         self.assertEqual(calls, [('login', USER), ('logout', USER)])
         self.assertFalse(q.session_exists(USER, self.private))
-        self.assertIn('已确认游戏登出', self.sent[-1][1])
+        self.assertIn('登出接口已接受', self.sent[-1][1])
         self.assertNotIn(QR, repr(self.sent))
         self.assertNotIn('synthetic-original', repr(self.sent))
 

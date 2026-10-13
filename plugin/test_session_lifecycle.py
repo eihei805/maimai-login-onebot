@@ -107,6 +107,27 @@ class LifecycleTests(unittest.TestCase):
         live.logout_owned(USER,m.Client(self.config,self.fixture),live.Transport(self.config))
         self.assertFalse(live.session_path(USER).exists())
         self.assertEqual(self.calls,[])
+    def test_capture_commits_before_reads_and_retains_even_logout_flag(self):
+        import io
+        outer = self
+        class SyntheticTransport(live.Transport):
+            def __call__(self, req):
+                self.stage = req.stage
+                self.calls += 1
+                if req.stage == 'GetUserMusicApi':
+                    record = live.read_session(USER)
+                    outer.assertEqual(record['state'], 'active')
+                    outer.assertEqual(record['login_success_epoch'], 1000)
+                return outer.fixture(req)
+        result = self.private / 'capture-new.json'
+        argv = ['client', '--live', '--qr-stdin', '--session-owner', USER,
+                '--logout', '--result', str(result)]
+        with patch.object(live, 'load_config', return_value=(self.config, {'region_id':1, 'place_id':2})), patch.object(live, 'Transport', SyntheticTransport), patch.object(sys, 'argv', argv), patch.object(sys, 'stdin', Mock(buffer=io.BytesIO(QR.encode()))), patch.object(live.time, 'time', return_value=1000), patch('builtins.print'):
+            self.assertEqual(live.main(), 0)
+        self.assertEqual(self.calls, ['QRLookup', 'UserLoginApi', 'GetUserMusicApi'])
+        self.assertEqual(live.read_session(USER)['login_success_epoch'], 1000)
+        self.assertEqual(q.read_private(result)['summary']['session'], 'active')
+
     def event(self,text,typ='private'):
         return {'post_type':'message','message_type':typ,'user_id':int(USER),'raw_message':text,
                 'message':[{'type':'text','data':{'text':text}}]}

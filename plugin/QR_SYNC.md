@@ -4,11 +4,11 @@
 
 私聊 `/取分` 查看说明。首次必须明确发送 `/同意HTTP取分`，接受原始 HTTP QR 接口明文传输风险。然后发送 `/取分 SGWCMAID...` 或直接发送 QR 文本。`/撤销HTTP取分` 撤回未来授权，不能取消已经开始的任务。授权按事件 `user_id` 存储，不从消息正文或游戏 ID 推导 QQ。
 
-`/login SGWCMAID...` 会登录并读取成绩后保留实际游戏会话；完成后使用 `/logout`，该命令由同一 QQ 的固定私有会话记录恢复客户端 cookie 与登录字段，只发送 `UserLogoutApi`，收到服务端 `returnCode=1` 后才删除会话记录。重复 `/login`、坏记录、权限不符、进程超时或登出失败均阻止新登录并保留记录，反馈为未确认。记录位于 `MAIMAI_PRIVATE_DIR/session-<QQ>.json`，目录 0700、文件 0600、原子更新；只写入已验证的 QQ 路径、登录会话字段和受限游戏 cookie，不保存 QR 或 token 输出。旧 `/取分` 流程仍在成功读取后自动登出。
+`/login SGWCMAID...` 会登录并读取成绩后保留实际游戏会话；完成后使用 `/logout`，该命令由同一 QQ 的固定私有会话记录恢复客户端 cookie 与登录字段，只发送 `UserLogoutApi`，收到服务端 `returnCode=1` 后才删除会话记录。重复 `/login`、坏记录、权限不符、进程超时或登出失败均阻止新登录并保留记录，反馈为未确认。记录位于 `MAIMAI_PRIVATE_DIR/session-<QQ>.json`，目录 0700、文件 0600、原子更新；只写入已验证的 QQ 路径、登录会话字段和受限游戏 cookie，不保存 QR 或 token 输出。所有 `/login`、`/取分` 和直接二维码入口均保留会话。登录成功满 60 秒后允许 `/logout`，第 14 分钟自动尝试正常登出。
 
-进程内全局非阻塞 semaphore 串行化取分，每 QQ 默认 60 秒冷却，不排队；后台线程让事件循环可继续给出忙碌回执。仅为现有单实例服务设计，不提供跨进程锁。HTTP 授权在 `MAIMAI_PRIVATE_DIR/qr-consents.json` 持久化，0600，原子更新；目录须为当前运行用户所有且 0700。不读取或输出生产配置。
+进程内全局非阻塞 semaphore 串行化取分，每 QQ 默认 60 秒冷却，不排队；后台线程让事件循环可继续给出忙碌回执。取分、手动退出与定时退出共用 flock 跨进程锁。HTTP 授权在 `MAIMAI_PRIVATE_DIR/qr-consents.json` 持久化，0600，原子更新；目录须为当前运行用户所有且 0700。不读取或输出生产配置。
 
-子进程无 shell，QR 仅经 stdin；固定 `--live --qr-stdin --allow-http-qr --preload-profile --logout --result <unique>`。沿用当前 Python，不新增依赖。客户端内部 180 秒限时，父进程 210 秒硬限时，stdout/stderr 丢弃。客户端负责以 O_EXCL/0600 创建唯一结果，读取时再次检查拥有者、权限及非符号链接。超时/失败只反馈固定消息，并明确登出未确认。完整/部分取分反馈成绩条数及实际登出状态，不发送原始成绩、凭据、QR 或游戏身份。
+子进程无 shell，QR 仅经 stdin；固定 `--live --qr-stdin --allow-http-qr --preload-profile --session-owner <QQ> --result <unique>`。沿用当前 Python，不新增依赖。客户端内部 180 秒限时，父进程 210 秒硬限时，stdout/stderr 丢弃。客户端负责以 O_EXCL/0600 创建唯一结果，读取时再次检查拥有者、权限及非符号链接。超时/失败只反馈固定消息，并明确登出未确认。完整/部分取分反馈成绩条数及实际登出状态，不发送原始成绩、凭据、QR 或游戏身份。
 
 ## 上传接口（供独立组件接入）
 
@@ -34,6 +34,10 @@ python3 -m unittest test_transport test_lookup test_b50 test_b50_sources test_ja
 python3 -m py_compile main.py qr_sync.py
 ```
 
-会话恢复包含 `Session`（游戏 userId、loginId、原始 loginDateTime、token、User-Agent identity）、原始 `LoginInputs` 和 host-only cookie；登出只使用原始登录时间，不重新扫码或登录。恢复时校验 QQ、配置目标和 chipId，禁止任意会话文件路径。正常退出仍依赖现有 HDD `UserLogoutApi` 协议在当前后端兼容，离线验证不能证明生产兼容性。登录响应丢失、或在提交成功与本地持久化之间崩溃，会留下 `unknown`，没有足够字段安全发送登出，此时 `/logout` 保持原样：报未确认且**不做任何归档**（游戏侧会话约 30 分钟后自行过期，登出行为不改）。需要立刻解除阻塞时，用私聊人工入口 `/清理会话`：该记录会被**改名归档**到 `MAIMAI_ORPHAN_ARCHIVE`（默认 `<PRIVATE>/archive`，需与 PRIVATE 同级 0700），因为 `unknown` 里没有任何登录字段，本来就没有会话可退。`/清理会话` 只对 `unknown` 生效；`active` 会先发一次**只读** `GetUserMusicApi` 探针：仅当游戏回以**结构完整的空响应**（`Empty decoded response` / `Empty HTTP body` / `Invalid JSON response`）——即它已不认识该会话——才把记录按 `expired-session-` 归档并解除阻塞；探针显示会话仍然有效则回复「请先 /logout」；网络/TLS/HTTP 层故障一律回复「暂时无法确认」且**不动任何记录**。这条路径同样不写游戏、不发网络登出，也不会把已失效会话说成已登出。记录关闭已确认但删除时崩溃时，下一次 `/logout` 只清理 closed 标记，不重放网络登出。仅支持单实例，未提供跨进程会话互斥。
+会话恢复包含 `Session`（游戏 userId、loginId、原始 loginDateTime、token、User-Agent identity）、原始 `LoginInputs` 和 host-only cookie；登出只使用原始登录时间，不重新扫码或登录。恢复时校验 QQ、配置目标和 chipId，禁止任意会话文件路径。正常退出仍依赖现有 HDD `UserLogoutApi` 协议在当前后端兼容，离线验证不能证明生产兼容性。登录响应丢失、或在提交成功与本地持久化之间崩溃，会留下 `unknown`，没有足够字段安全发送登出，此时 `/logout` 保持原样：报未确认且**不做任何归档**（游戏侧会话约 30 分钟后自行过期，登出行为不改）。需要立刻解除阻塞时，用私聊人工入口 `/清理会话`：该记录会被**改名归档**到 `MAIMAI_ORPHAN_ARCHIVE`（默认 `<PRIVATE>/archive`，需与 PRIVATE 同级 0700），因为 `unknown` 里没有任何登录字段，本来就没有会话可退。`/清理会话` 只对 `unknown` 生效；`active` 会先发一次**只读** `GetUserMusicApi` 探针：仅当游戏回以**结构完整的空响应**（`Empty decoded response` / `Empty HTTP body` / `Invalid JSON response`）——即它已不认识该会话——才把记录按 `expired-session-` 归档并解除阻塞；探针显示会话仍然有效则回复「请先 /logout」；网络/TLS/HTTP 层故障一律回复「暂时无法确认」且**不动任何记录**。这条路径同样不写游戏、不发网络登出，也不会把已失效会话说成已登出。记录关闭已确认但删除时崩溃时，下一次 `/logout` 只清理 closed 标记，不重放网络登出。会话操作使用跨进程互斥。
 
 新测试严格使用合成 QR、临时目录、mock 子进程，禁用 socket。没有发送 QQ、运行真实 QR、发游戏网络请求或重启生产服务。已校正旧 B50 测试契约：每人 30 秒冷却、提示节流，以及 HTTP 429 的全局 Retry-After；未修改群限流实现。完整离线回归 128 项通过，包含插件入口的 /login → 双站模拟上传 → /logout 流程。
+
+## 定时登出
+
+登录成功后立即保存独立的 `login_success_epoch`，后续取分和保存 cookies 不重置计时。systemd 每约 10 秒扫描：满 840 秒尝试一次正常登出，发送前持久保存尝试标记，失败保留记录并通知 QQ，后续可人工 `/logout` 重试。服务重启后按原时间恢复；没有时间字段的旧记录不自动发送请求。接口接受不代表已实测游戏会话释放。
