@@ -331,6 +331,10 @@ class SiteBindings:
                 item = outcome.get(site, {}) if isinstance(outcome, dict) else {}
                 state = item.get('state') if isinstance(item, dict) else None
                 text = label + '：' + labels.get(state, '结果未确认')
+                if state == 'failed' and isinstance(item, dict):
+                    cause = score_upload.FAILURE_LABELS.get(item.get('reason'))
+                    if cause:
+                        text += '（' + cause + '）'
                 if state == 'blocked' and isinstance(item, dict):
                     cause = self._BLOCK_LABELS.get(item.get('reason'))
                     if cause:

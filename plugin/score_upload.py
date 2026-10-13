@@ -8,6 +8,7 @@ import json
 import re
 import math
 import time
+import logging
 import urllib.request
 import urllib.error
 
@@ -48,6 +49,26 @@ FS = ('', 'sync', 'fs', 'fsp', 'fsd', 'fsdp')
 COMBO = {0: '', 1: 'fc', 2: 'fcp', 3: 'ap', 4: 'app'}
 # ChainLow/Hi and SyncLow/Hi are NOT mapped just by their names.
 SYNC = {0: '', 5: 'sync'}
+
+FAILURE_LABELS = {
+    'credential_or_permission_denied': '令牌或权限被拒绝',
+    'read_failed': '读取接口网络失败',
+    'transport_failed_outcome_unknown': '上传网络失败，结果未确认',
+    'rate_limited_no_retry': '接口限流',
+    'http_failure_unconfirmed': '接口 HTTP 异常',
+    'invalid_response': '接口响应格式异常',
+    'lxns_rejected': '落雪接口拒绝请求',
+    'invalid_existing_scores': '已有成绩格式异常',
+    'duplicate_existing_scores': '已有成绩存在重复谱面',
+    'unknown_existing_badge': '已有成绩状态无法识别',
+    'invalid_existing_score': '已有成绩数值异常',
+    'invalid_player_identity': '落雪玩家身份响应异常',
+    'friend_code_mismatch': '落雪好友码与绑定不一致',
+    'ambiguous_lxns_auth': '落雪凭据配置冲突',
+    'invalid_credential': '令牌格式无效',
+    'confirmed_friend_code_required': '缺少已确认好友码',
+    'write_count_mismatch_unconfirmed': '写入数量未确认',
+}
 
 class UploadError(ValueError):
     """Messages are fixed codes, never upstream bodies or credentials."""
@@ -269,12 +290,16 @@ def upload_scores(rows, fish_catalog, lxns_catalog, credentials, *, complete=Fal
     for site in ('fish', 'lxns'):
         if site == 'fish' and credentials.fish_import_token is None: continue
         if site == 'lxns' and credentials.lxns_personal_token is None and credentials.lxns_developer_token is None: continue
+        stage = 'credentials'
         try:
             if site == 'fish':
                 headers = {'Import-Token': _token(credentials.fish_import_token)}
+                stage = 'read_scores'
                 old = _call(transport, 'GET', FISH+'records', headers)
                 if not isinstance(old, dict) or 'records' not in old: raise UploadError('invalid_existing_scores')
+                stage = 'merge_scores'
                 body = _merge(prepared.fish, old['records'], site)
+                stage = 'upload_scores'
                 answer = _call(transport, 'POST', FISH+'update_records', headers, body)
                 if not isinstance(answer, dict) or any(type(answer.get(k)) is not int or answer[k] < 0 for k in ('updates', 'creates')) or answer['updates'] + answer['creates'] != len(body):
                     raise UploadError('write_count_mismatch_unconfirmed')
@@ -283,6 +308,7 @@ def upload_scores(rows, fish_catalog, lxns_catalog, credentials, *, complete=Fal
                     raise UploadError('ambiguous_lxns_auth')
                 if credentials.lxns_personal_token is not None:
                     headers = {'X-User-Token': _token(credentials.lxns_personal_token)}
+                    stage = 'read_player'
                     player = _call(transport, 'GET', LXNS+'user/maimai/player', headers)
                     if not isinstance(player, dict):
                         raise UploadError('invalid_player_identity')
@@ -295,13 +321,19 @@ def upload_scores(rows, fish_catalog, lxns_catalog, credentials, *, complete=Fal
                     friend = _integer(credentials.lxns_friend_code, 1, 10**20-1, 'confirmed_friend_code_required')
                     headers = {'Authorization': _token(credentials.lxns_developer_token)}
                     url = LXNS+f'maimai/player/{friend}/scores'
+                stage = 'read_scores'
                 old = _call(transport, 'GET', url, headers)
+                stage = 'merge_scores'
                 body = _merge(prepared.lxns, old, site)
+                stage = 'upload_scores'
                 _call(transport, 'POST', url, headers, {'scores': body})
             result[site] = {'state': 'accepted_unverified', 'submitted': len(body),
                             'requires_readback': True, 'omitted_badges': prepared.omitted_badges,
                             'skipped_rows': prepared.skipped_rows,
                             'skipped_reasons': dict(prepared.skipped_reasons)}
         except UploadError as exc:
-            result[site] = {'state': 'failed', 'reason': str(exc), 'submitted': 0}
+            reason = str(exc)
+            safe_reason = reason if reason in FAILURE_LABELS else 'unclassified_failure'
+            logging.getLogger(__name__).warning('score_upload_failed site=%s stage=%s reason=%s', site, stage, safe_reason)
+            result[site] = {'state': 'failed', 'reason': reason, 'submitted': 0}
     return result

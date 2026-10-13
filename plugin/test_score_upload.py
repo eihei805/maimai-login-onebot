@@ -22,6 +22,19 @@ class Fake:
 
 def lx(data): return (200, {'success': True, 'code': 200, 'data': data})
 
+class Diagnostics(unittest.TestCase):
+    def test_safe_read_failure_log(self):
+        transport = Fake([RuntimeError('SECRET upstream response')])
+        with self.assertLogs('score_upload', level='WARNING') as logs:
+            result = u.upload_scores([ROW], FISH, LXNS,
+                u.Credentials(lxns_personal_token='synthetic-personal'),
+                complete=True, transport=transport)
+        self.assertEqual(result['lxns']['reason'], 'read_failed')
+        text = ' '.join(logs.output)
+        self.assertIn('stage=read_player reason=read_failed', text)
+        self.assertNotIn('SECRET', text)
+        self.assertNotIn('synthetic-personal', text)
+
 class Conversion(unittest.TestCase):
     def test_catalog_dx_and_scale(self):
         p = u.prepare_scores([ROW, dict(ROW, musicId=8)], FISH, LXNS)
