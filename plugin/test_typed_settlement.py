@@ -92,6 +92,17 @@ class TypedTests(unittest.TestCase):
             private=private or self.tmp.name, snapshot=self.snap, machine=self.machine,
             auth_date_time=1800000000, catalog=self.catalog, operation=self.op, now=self.clock)
 
+    def test_empty_identity_matches_login_contract(self):
+        self.session.user_agent_identity = ''
+        self.assertEqual(self.call()['status'], 'verified')
+        self.assertEqual(self.writes(), 1)
+
+    def test_non_string_identity_rejected_before_claim(self):
+        self.session.user_agent_identity = None
+        self.assertEqual(self.call()['reason'], 'invalid_or_stale_input')
+        self.assertEqual(self.writes(), 0)
+        self.assertEqual(list(Path(self.tmp.name).iterdir()), [])
+
     def writes(self):
         return sum(api == 'UpsertUserAllApi' for api, _ in self.client.calls)
 

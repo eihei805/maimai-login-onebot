@@ -79,6 +79,12 @@ class NativeTests(unittest.TestCase):
         return upload.submit_native(self.client, self.session, owner='offline-owner',
             private=self.tmp.name, document=self.document, snapshot=self.snapshot, now=self.clock)
 
+    def test_empty_identity_matches_login_contract(self):
+        self.session.user_agent_identity = ''
+        self.document['session']['userAgentIdentity'] = ''
+        self.assertEqual(self.call()['status'], 'verified')
+        self.assertEqual(self.writes(), 1)
+
     def writes(self):
         return sum(api == 'UpsertUserAllApi' for api, _ in self.client.calls)
 

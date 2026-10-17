@@ -288,7 +288,7 @@ def submit_native(client, session, *, owner, private, document, snapshot, now=ti
         if type(owner) is not str or not owner.strip() or len(owner) > 256:
             raise ValueError('owner')
         binding = tuple(getattr(session, k) for k in ('user_id', 'login_id', 'login_date_time', 'user_agent_identity'))
-        if any(type(v) is not int or v <= 0 for v in binding[:3]) or type(binding[3]) is not str or not binding[3]:
+        if any(type(v) is not int or v <= 0 for v in binding[:3]) or type(binding[3]) is not str:
             raise ValueError('session')
 
         def current():
