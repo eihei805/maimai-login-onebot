@@ -157,6 +157,23 @@ def _readback(client, session, packet, snapshot, current):
     # success on an empty chart list (or on a failed unrelated music GET).
     if not packet['upsertUserAll']['userMusicDetailList']:
         checks.pop('charts')
+    # Independent writes must also preserve profile counters and rating.
+    checks['profile'] = False
+    try:
+        current()
+        reply = client._game('GetUserDataApi', dict(userId=packet['userId']), session.user_agent_identity)
+        current()
+        _bounded(reply)
+        if required(reply, 'userId', int) != packet['userId']:
+            raise ValueError('profile_binding')
+        if 'returnCode' in reply and required(reply, 'returnCode', int) != 1:
+            raise ValueError('profile_code')
+        profile = required(reply, 'userData', dict)
+        baseline = snapshot['nodes']['userData'][0]
+        checks['profile'] = all(required(profile, key, int) == baseline[key]
+                                for key in ('playCount', 'currentPlayCount', 'playerRating'))
+    except Exception:
+        pass
     checks['items'] = False
     try:
         actual = {}
@@ -204,6 +221,7 @@ def submit_typed(client, session, *, owner, private, snapshot, machine,
     acknowledged_unverified/checks or verified/checks. Preexisting valid owned
     items do not claim or write; lower/equal scores reject score_not_improved.
     Readback checks exact target chart and every collected inventory/charge row.
+    Profile play counters and rating must remain equal to the baseline.
     Only collected item kinds are attested. No raw server errors escape.
     """
     try:

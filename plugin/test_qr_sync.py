@@ -178,6 +178,15 @@ class TicketInventoryTests(unittest.TestCase):
     def test_recognised_as_sensitive(self):
         self.assertTrue(q.sensitive_text('/查券'))
 
+    def test_query_aliases_route_to_same_read_only_worker(self):
+        self.record()
+        for command in ('/查券', '/查劵', '/查卷'):
+            self.assertTrue(q.group_sensitive(self.event(command)))
+            self.assertTrue(self.sync.handle(self.event(command), self.send))
+            self.wait()
+        self.assertEqual(self.inventory.call_count, 3)
+        self.assertEqual(q.event_text({'raw_message': '/绑定水鱼 /查卷'}), '/绑定水鱼 /查卷')
+
     def test_requires_retained_session(self):
         self.assertTrue(self.sync.handle(self.event('/查券'), self.send)); self.wait()
         self.assertIn('/login', self.sent[-1][1]); self.inventory.assert_not_called()

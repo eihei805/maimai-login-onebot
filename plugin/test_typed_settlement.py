@@ -32,6 +32,11 @@ class Client:
             if self.timeout:
                 raise TimeoutError('SECRET')
             return dict(userId=1, returnCode=1)
+        if api == 'GetUserDataApi':
+            profile = copy.deepcopy(self.snapshot['nodes']['userData'][0])
+            if self.mismatch in ('playCount', 'currentPlayCount', 'playerRating'):
+                profile[self.mismatch] += 1
+            return dict(userId=1, userData=profile)
         ua = self.packet['upsertUserAll']
         if api == 'GetUserMusicApi':
             if self.music_pages is not None:
@@ -143,7 +148,7 @@ class TypedTests(unittest.TestCase):
                 self.assertEqual(self.build()['upsertUserAll']['userMusicDetailList'][0]['scoreRank'], expected)
 
     def test_roundtrip_shared_claim_and_exact_readbacks(self):
-        self.assertEqual(self.call(), dict(status='verified', checks=dict(charts=True, charges=True, items=True)))
+        self.assertEqual(self.call(), dict(status='verified', checks=dict(charts=True, charges=True, profile=True, items=True)))
         self.assertEqual(self.call()['reason'], 'already_claimed')
         self.assertEqual(self.writes(), 1)
         from settlement_submit import _claimed
@@ -154,7 +159,7 @@ class TypedTests(unittest.TestCase):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as private:
                 self.op = dict(operation='item', kind=kind, item_id=123456)
                 self.client = Client(self.snap)
-                self.assertEqual(self.call(private), dict(status='verified', checks=dict(charges=True, items=True)))
+                self.assertEqual(self.call(private), dict(status='verified', checks=dict(charges=True, profile=True, items=True)))
                 ua = self.client.packet['upsertUserAll']
                 self.assertEqual(ua['userMusicDetailList'], [])
                 self.assertEqual(ua['isNewItemList'], '1')
@@ -201,6 +206,16 @@ class TypedTests(unittest.TestCase):
         self.op = dict(operation='item', kind=10, item_id=7)
         self.snap['nodes']['userItemList'][1]['isValid'] = False
         self.assertEqual(self.call()['reason'], 'invalid_or_stale_input')
+
+    def test_independent_upload_rejects_success_when_profile_counters_change(self):
+        for field in ('playCount', 'currentPlayCount', 'playerRating'):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as private:
+                self.client = Client(self.snap)
+                self.client.mismatch = field
+                result = self.call(private)
+                self.assertEqual(result['status'], 'acknowledged_unverified')
+                self.assertFalse(result['checks']['profile'])
+                self.assertEqual(self.writes(), 1)
 
     def test_readback_every_chart_field_inventory_charges_and_timeout(self):
         for field in list(SCHEMA['UserMusicDetail']) + ['items', 'charges']:

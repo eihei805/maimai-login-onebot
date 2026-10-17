@@ -51,7 +51,7 @@ class CaptureResult:
 
 def sensitive_text(text: str) -> bool:
     # Broad guard, including malformed QR and secret-bearing commands.
-    return 'SGWCMAID' in text.upper() or text.lower().startswith(('/login', '/logout', '/清理会话')) or text.startswith(('/取分', '/同意HTTP取分', '/撤销HTTP取分', '/绑定', '/解绑', '/上传', '/查券', '/购券'))
+    return 'SGWCMAID' in text.upper() or text.lower().startswith(('/login', '/logout', '/清理会话')) or text.startswith(('/取分', '/同意HTTP取分', '/撤销HTTP取分', '/绑定', '/解绑', '/上传', '/查券', '/查劵', '/查卷', '/购券', '/购劵', '/购卷'))
 
 
 def event_text(event: dict) -> str:
@@ -69,7 +69,7 @@ def event_text(event: dict) -> str:
     else:
         text = str(event.get('raw_message') or '').strip()
     # Normalize only the command prefix, never credentials or arbitrary text.
-    return re.sub(r'^/购[劵卷](?=\s|$)', '/购券', text)
+    return re.sub(r'^/(购|查)[劵卷](?=\s|$)', r'/\1券', text)
 
 
 def group_sensitive(event: dict) -> bool:
@@ -589,9 +589,9 @@ class QRSync:
                     raise
                 return True
             if text.startswith(('/上传物品', '/上传成绩')):
-                from upload_commands import parse_command
+                from upload_commands import load_catalog, parse_command
                 try:
-                    catalog = json.loads(Path(__file__).with_name('data').joinpath('music_data.json').read_text()) if text.startswith('/上传成绩') else []
+                    catalog = load_catalog() if text.startswith('/上传成绩') else []
                     operation = parse_command(text, catalog)
                 except ValueError as exc:
                     send(int(user), str(exc))
