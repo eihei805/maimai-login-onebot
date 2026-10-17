@@ -65,8 +65,11 @@ def event_text(event: dict) -> str:
             if not isinstance(data, dict) or not isinstance(data.get('text'), str):
                 return ''
             parts.append(data['text'])
-        return ''.join(parts).strip()
-    return str(event.get('raw_message') or '').strip()
+        text = ''.join(parts).strip()
+    else:
+        text = str(event.get('raw_message') or '').strip()
+    # Normalize only the command prefix, never credentials or arbitrary text.
+    return re.sub(r'^/购[劵卷](?=\s|$)', '/购券', text)
 
 
 def group_sensitive(event: dict) -> bool:

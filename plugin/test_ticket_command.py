@@ -132,3 +132,24 @@ class GroupTicketRouteTests(unittest.TestCase):
                 self.assertEqual(forwarded['raw_message'], text)
                 send(12345678, '测试结果')
                 reply.assert_called_once_with(123456789, '测试结果')
+
+
+class TicketSpellingTests(unittest.TestCase):
+    def test_private_aliases_reach_worker_without_purchase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sync = q.QRSync(Path(tmp))
+            for spelling in ('购券', '购劵', '购卷'):
+                for charge in (2, 3):
+                    text = '/' + spelling + ' ' + str(charge)
+                    event = dict(post_type='message', message_type='private',
+                                 user_id=12345678, raw_message=text,
+                                 message=[{'type':'text','data':{'text':text}}])
+                    with patch.object(q.threading, 'Thread') as thread:
+                        try:
+                            self.assertTrue(sync.handle(event, Mock()))
+                            self.assertEqual(thread.call_args.kwargs['args'][:2], ('12345678', charge))
+                            thread.return_value.start.assert_called_once()
+                        finally:
+                            sync.gate.release()
+    def test_alias_does_not_rewrite_credentials(self):
+        self.assertEqual(q.event_text({'raw_message':'/绑定水鱼 /购劵 3'}), '/绑定水鱼 /购劵 3')
