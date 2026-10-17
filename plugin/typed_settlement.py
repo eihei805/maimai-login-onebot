@@ -1,4 +1,4 @@
-"""Experimental scalar score upload and explicit all-miss cosmetic settlement.
+"""Experimental independent score and cosmetic deltas without gameplay.
 
 The native ExportUserAll evidence uses BuildListData for independent music/item
 struct deltas. Its normal exporter ALWAYS emits a game playlog, however: schema
@@ -12,7 +12,7 @@ from copy import deepcopy
 import math
 import time
 
-from basic_settlement import SCHEMA, build_basic_settlement, check, required
+from basic_settlement import SCHEMA, check, required
 from game_score_upload import NODES, _bits, _bounded, _index, _readback as _score_readback
 from item_upload import KINDS, add_collections, item_delta, validate_items
 from settlement_collect import ITEM_KINDS
@@ -81,7 +81,7 @@ def _baseline(snapshot, machine, binding, auth_date_time, clock):
 
 def build_typed_settlement(snapshot, machine, *, user_id, login_id, login_date_time,
                            auth_date_time, catalog, operation, now_unix):
-    """Build a full envelope: experimental no-play score, or BASIC cosmetic play.
+    """Build a full envelope with an independent score or cosmetic delta.
 
     operation uses numeric protocol musicId (DX namespace included) and level
     0..4, or a cosmetic kind integer / exact KINDS name. Scalar achievements use
@@ -141,17 +141,6 @@ def build_typed_settlement(snapshot, machine, *, user_id, login_id, login_date_t
             raise ValueError('item_scope')
         item_id = required(operation, 'item_id', int)
         delta = item_delta(base['userItemList'], add_collections(base['userItemList'], kind, [item_id]))
-        if delta['userItemList']:
-            # Cosmetics use the established explicit all-miss gameplay path,
-            # never the experimental no-play score path. No ticket is selected.
-            packet = build_basic_settlement(snapshot, machine, user_id=user_id,
-                login_id=login_id, login_date_time=login_date_time,
-                auth_date_time=auth_date_time, play_date_time=int(now_unix) + machine['utcOffsetSeconds'],
-                settle_date_time=int(now_unix) + machine['utcOffsetSeconds'],
-                now_unix=int(now_unix), catalog=catalog, kind=kind, item_ids=[item_id])
-            if packet['upsertUserAll']['userGamePlaylogList'][0]['useTicketId'] != -1:
-                raise ValueError('ticket_consumption')
-            return packet
         ua.update(delta)
     else:
         raise ValueError('operation')

@@ -143,13 +143,16 @@ class TypedTests(unittest.TestCase):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as private:
                 self.op = dict(operation='item', kind=kind, item_id=123456)
                 self.client = Client(self.snap)
-                self.assertEqual(self.call(private), dict(status='verified', checks=dict(charts=True, charges=True, items=True)))
+                self.assertEqual(self.call(private), dict(status='verified', checks=dict(charges=True, items=True)))
                 ua = self.client.packet['upsertUserAll']
-                self.assertEqual(ua['userMusicDetailList'][0]['musicId'], 8)
+                self.assertEqual(ua['userMusicDetailList'], [])
                 self.assertEqual(ua['isNewItemList'], '1')
                 self.assertEqual(ua['userItemList'][0]['itemId'], 123456)
-                self.assertEqual(ua['userGamePlaylogList'][0]['useTicketId'], -1)
-                self.assertEqual(ua['userData'][0]['playCount'], self.snap['nodes']['userData'][0]['playCount'] + 1)
+                self.assertEqual(ua['userGamePlaylogList'], [])
+                self.assertEqual(self.client.packet['userPlaylogList'], [])
+                self.assertEqual(ua['userData'][0]['playCount'], self.snap['nodes']['userData'][0]['playCount'])
+                for name in ('userData', 'userExtend', 'userOption', 'userRatingList'):
+                    self.assertEqual(ua[name], self.snap['nodes'][name])
 
     def test_already_owned_no_claim_no_write_and_zero_stock_add(self):
         self.op = dict(operation='item', kind=10, item_id=7)

@@ -94,7 +94,7 @@ message and sends no settlement; this is not a completed arbitrary-score editor.
   BASIC/ADVANCED/EXPERT/MASTER/Re:MASTER. Achievement is an integer
   0–1010000; 1010000 means 101.0000%. Equal/lower existing scores are not written.
 
-Item uploads use the established one-track SD BASIC all-MISS settlement (no ticket selected), so play counters increase; existing chart bests are preserved.
+Item uploads send only the item delta with empty playlogs. Profiles, play counters, music and rating are preserved. Server acceptance of this independent delta is experimental and must be checked by inventory readback.
 
 Both use the requester's retained session and a fresh complete baseline. Commands
 never purchase or consume tickets. Scalar score editing sends an experimental
