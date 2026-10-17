@@ -612,11 +612,15 @@ def _main():
         client = m.Client(c, transport)
         session = restore_session(args.session_owner, client, transport)
         kinds = (operation['kind'],) if operation['operation'] == 'item' else (1,)
-        snapshot = collect_snapshot(client, session, captured_at=int(time.time()),
-            extend_flags=profile['extend_flags'], item_kinds=kinds, page_budget=args.page_budget)
-        from ticket_machine import resolve_machine
-        machine = resolve_machine(profile['machine'], snapshot, c, client._login_inputs)
-        catalog = json.loads(Path(__file__).with_name('plugin').joinpath('data/music_data.json').read_text())
+        try:
+            snapshot = collect_snapshot(client, session, captured_at=int(time.time()),
+                extend_flags=profile['extend_flags'], item_kinds=kinds, page_budget=args.page_budget)
+            from ticket_machine import resolve_machine
+            machine = resolve_machine(profile['machine'], snapshot, c, client._login_inputs)
+            catalog = json.loads(Path(__file__).with_name('plugin').joinpath('data/music_data.json').read_text())
+        except Exception:
+            print(json.dumps({'status': 'rejected', 'reason': 'snapshot_preflight_failed'}))
+            return 3
         result = submit_typed(client, session, owner=args.session_owner, private=PRIVATE,
             snapshot=snapshot, machine=machine, auth_date_time=client.auth_date_time,
             catalog=catalog, operation=operation)

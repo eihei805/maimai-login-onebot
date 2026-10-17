@@ -27,9 +27,11 @@ def check(value, kind, path):
         if missing or extra:
             raise ValueError(f'{path}: missing={sorted(missing)}, unknown={sorted(extra)}')
         for key, typ in SCHEMA[kind].items():
-            # Game Import/ExportUserDetail passes AccessCode through unchanged.
-            # Preserve explicit server null; missing fields still fail above.
-            if kind == 'UserDetail' and key == 'accessCode' and value[key] is None:
+            # Preserve explicitly observed server nulls in identity/history fields.
+            # No replacement history is invented; missing fields still fail above.
+            if (kind == 'UserDetail' and key in
+                    {'accessCode', 'lastGameId', 'lastPlaceName', 'lastClientId', 'dateTime'}
+                    and value[key] is None):
                 continue
             check(value[key], typ, path + '.' + key)
     elif kind in ('byte', 'int', 'uint', 'long', 'ulong'):

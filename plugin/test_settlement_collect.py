@@ -101,6 +101,20 @@ class CollectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'accessCode'):
             self.collect()
 
+    def test_explicit_null_history_preserved_but_missing_rejected(self):
+        fields = ('lastGameId', 'lastPlaceName', 'lastClientId', 'dateTime')
+        detail = self.replies['GetUserDataApi']['userData']
+        for key in fields:
+            detail[key] = None
+        snapshot = self.collect()
+        for key in fields:
+            self.assertIsNone(snapshot['nodes']['userData'][0][key])
+        for key in fields:
+            saved = detail.pop(key)
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, key):
+                self.collect()
+            detail[key] = saved
+
     def test_missing_flags_fail_before_requests(self):
         with self.assertRaisesRegex(ValueError,'isPhotoAgree'): self.collect(extend_flags={})
         self.assertEqual(self.client.calls,[])

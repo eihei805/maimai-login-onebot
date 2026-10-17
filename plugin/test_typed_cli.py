@@ -43,3 +43,17 @@ class TypedCLITests(unittest.TestCase):
         p.write_text(json.dumps(data))
         self.assertEqual(self.run_typed()[0], 0)
         self.unchanged()
+
+    def test_collection_failure_is_explicit_and_never_submits(self):
+        out = io.StringIO()
+        with patch.object(live, 'load_config', return_value=(self.config, {})), \
+             patch('settlement_collect.collect_snapshot', side_effect=ValueError('synthetic')), \
+             patch('typed_settlement.submit_typed') as submit, \
+             patch.object(sys, 'argv', ['client', '--upload-typed', '--session-owner', USER,
+                                       '--upload-operation', json.dumps(self.operation)]), \
+             contextlib.redirect_stdout(out):
+            self.assertEqual(live.main(), 3)
+        self.assertEqual(json.loads(out.getvalue()),
+                         dict(status='rejected', reason='snapshot_preflight_failed'))
+        submit.assert_not_called()
+        self.unchanged()

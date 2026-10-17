@@ -730,7 +730,8 @@ class QRSync:
                 text = '目标已拥有或成绩未超过历史最佳，本次没有发送写入。'
             elif status == 'rejected':
                 reason = result.get('reason')
-                messages = {'score_not_improved': '成绩未超过历史最佳，本次没有发送写入。',
+                messages = {'snapshot_preflight_failed': '账号数据收集或保存格式校验失败，本次未发送写入。',
+                    'score_not_improved': '成绩未超过历史最佳，本次没有发送写入。',
                     'already_claimed': '当前会话已执行过一次写入尝试；不会重复提交，请先核对账号。'}
                 text = messages.get(reason, label + '上传前校验未通过，本次未发送结算。')
             else:
