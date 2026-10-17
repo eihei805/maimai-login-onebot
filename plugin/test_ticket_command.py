@@ -111,3 +111,24 @@ class TicketCommandTests(unittest.TestCase):
             with self.assertRaises(q.CaptureError):
                 q.ticket_purchase(self.uid, 2, private=self.private)
             run.assert_not_called()
+
+
+class GroupTicketRouteTests(unittest.TestCase):
+    def test_group_ticket_routes_without_live_purchase(self):
+        import main
+        for text in ('/购券 2', '/购券 3', '/购券'):
+            event = dict(post_type='message', message_type='group', group_id=123456789,
+                         user_id=12345678, raw_message=text,
+                         message=[{'type':'text','data':{'text':text}}])
+            with patch.object(main, 'ALLOWED_GROUP_IDS', frozenset({123456789})), \
+                 patch.object(q.DEFAULT_SYNC, 'handle') as handle, \
+                 patch('site_bindings.handle', return_value=False), \
+                 patch.object(main, '_group_qr_hint') as reply:
+                main.handle(event)
+                handle.assert_called_once()
+                forwarded, send = handle.call_args.args
+                self.assertEqual(forwarded['message_type'], 'private')
+                self.assertEqual(forwarded['user_id'], 12345678)
+                self.assertEqual(forwarded['raw_message'], text)
+                send(12345678, '测试结果')
+                reply.assert_called_once_with(123456789, '测试结果')
