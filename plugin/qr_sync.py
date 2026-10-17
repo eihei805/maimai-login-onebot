@@ -725,6 +725,18 @@ class QRSync:
             send(int(user), '正在收集账号数据并核对上传条件，最长约 3 分半钟；请勿重复提交。')
             result = typed_upload(user, operation, private=self.private)
             status = result['status']
+            diag = result.get('diagnostic')
+            event = {'event': 'typed_upload_diagnostic', 'operation': operation['operation'], 'status': status}
+            if isinstance(diag, dict):
+                if diag.get('outcome') in ('accepted', 'response_rejected', 'exception'):
+                    event['outcome'] = diag['outcome']
+                if type(diag.get('return_code')) is int:
+                    event['return_code'] = diag['return_code']
+            checks = result.get('checks')
+            if isinstance(checks, dict):
+                event['checks'] = {key: checks[key] for key in ('charts', 'charges', 'profile', 'items')
+                                   if type(checks.get(key)) is bool}
+            print(json.dumps(event), file=sys.stderr, flush=True)
             label = '物品' if operation['operation'] == 'item' else '成绩'
             if status == 'verified':
                 text = label + '已提交，并通过目标数据和券库存读回核对；未使用券。'

@@ -148,7 +148,7 @@ class TypedTests(unittest.TestCase):
                 self.assertEqual(self.build()['upsertUserAll']['userMusicDetailList'][0]['scoreRank'], expected)
 
     def test_roundtrip_shared_claim_and_exact_readbacks(self):
-        self.assertEqual(self.call(), dict(status='verified', checks=dict(charts=True, charges=True, profile=True, items=True)))
+        self.assertEqual(self.call(), dict(status='verified', checks=dict(charts=True, charges=True, profile=True, items=True), diagnostic=dict(outcome='accepted', return_code=1)))
         self.assertEqual(self.call()['reason'], 'already_claimed')
         self.assertEqual(self.writes(), 1)
         from settlement_submit import _claimed
@@ -159,7 +159,7 @@ class TypedTests(unittest.TestCase):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as private:
                 self.op = dict(operation='item', kind=kind, item_id=123456)
                 self.client = Client(self.snap)
-                self.assertEqual(self.call(private), dict(status='verified', checks=dict(charges=True, profile=True, items=True)))
+                self.assertEqual(self.call(private), dict(status='verified', checks=dict(charges=True, profile=True, items=True), diagnostic=dict(outcome='accepted', return_code=1)))
                 ua = self.client.packet['upsertUserAll']
                 self.assertEqual(ua['userMusicDetailList'], [])
                 self.assertEqual(ua['isNewItemList'], '1')
@@ -206,6 +206,13 @@ class TypedTests(unittest.TestCase):
         self.op = dict(operation='item', kind=10, item_id=7)
         self.snap['nodes']['userItemList'][1]['isValid'] = False
         self.assertEqual(self.call()['reason'], 'invalid_or_stale_input')
+
+    def test_write_exception_diagnostics_do_not_expose_exception(self):
+        self.client.timeout = True
+        result = self.call()
+        self.assertEqual(result['diagnostic'], dict(outcome='exception'))
+        self.assertNotIn('SECRET', str(result))
+        self.assertEqual(self.writes(), 1)
 
     def test_independent_upload_rejects_success_when_profile_counters_change(self):
         for field in ('playCount', 'currentPlayCount', 'playerRating'):

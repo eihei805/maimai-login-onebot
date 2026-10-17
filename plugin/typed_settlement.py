@@ -268,13 +268,17 @@ def submit_typed(client, session, *, owner, private, snapshot, machine,
             raise ValueError('packet_changed')
     except Exception:
         return dict(status='rejected', reason='pre_send_validation_failed')
+    diagnostic = dict(outcome='exception')
     try:
         reply = client._game('UpsertUserAllApi', deepcopy(packet), binding[3])
         acknowledged = type(reply) is dict and type(reply.get('returnCode')) is int and reply['returnCode'] == 1
         if acknowledged and 'userId' in reply:
             acknowledged = type(reply['userId']) is int and reply['userId'] == binding[0]
+        diagnostic['outcome'] = 'accepted' if acknowledged else 'response_rejected'
+        if type(reply) is dict and type(reply.get('returnCode')) is int:
+            diagnostic['return_code'] = reply['returnCode']
     except Exception:
         acknowledged = False
     checks = _readback(client, session, packet, snap, current)
     status = ('verified' if all(checks.values()) else 'acknowledged_unverified') if acknowledged else 'ambiguous'
-    return dict(status=status, checks=checks)
+    return dict(status=status, checks=checks, diagnostic=diagnostic)
