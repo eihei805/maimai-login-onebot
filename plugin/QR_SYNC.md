@@ -82,3 +82,23 @@ document; charts, profile/rating and machine evidence must come from a compatibl
 producer. No compatible live document is bundled. Offline tests do not establish
 acceptance or persistence on a game server. A missing document produces an explicit
 message and sends no settlement; this is not a completed arbitrary-score editor.
+
+
+### Scalar upload commands
+
+- `/上传物品 类型 id`, e.g. `/上传物品 背景板 201` or `/上传物品 1 201`.
+  Types: 背景板=1, 称号=2, 头像=3, 搭档=10, 姓名框=11.
+- `/上传成绩 名称/id 等级 成绩`, e.g. `/上传成绩 8 绿 1010000`.
+  Titles may contain spaces; exact case-insensitive title matches are supported.
+  Ambiguous SD/DX titles return candidate IDs. Levels: 0–4, 绿黄红紫白,
+  BASIC/ADVANCED/EXPERT/MASTER/Re:MASTER. Achievement is an integer
+  0–1010000; 1010000 means 101.0000%. Equal/lower existing scores are not written.
+
+Item uploads use the established one-track SD BASIC all-MISS settlement (no ticket selected), so play counters increase; existing chart bests are preserved.
+
+Both use the requester's retained session and a fresh complete baseline. Commands
+never purchase or consume tickets. Scalar score editing sends an experimental
+aggregate delta without inventing judgments, DX score, FC/AP/sync or rating.
+Its server acceptance remains unverified. A successful acknowledgement alone
+is not reported as a verified upload; target values and inventories must read back.
+The shared durable per-session claim prevents automatic replay after uncertainty.

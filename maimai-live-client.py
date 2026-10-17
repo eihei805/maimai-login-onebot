@@ -412,6 +412,8 @@ def _main():
     mode.add_argument('--ticket-inventory', action='store_true')
     mode.add_argument('--game-charge', action='store_true', help='Read current ticket offerings without login or QR')
     mode.add_argument('--settle-basic', action='store_true')
+    mode.add_argument('--upload-typed', action='store_true')
+    parser.add_argument('--upload-operation', help='Validated scalar upload operation JSON; no secrets')
     mode.add_argument('--upload-game-scores', action='store_true', help='Submit a private, session-bound native post-play packet and verify scores')
     parser.add_argument('--score-document', type=Path)
     mode.add_argument('--ticket-purchase', '--buy-ticket', dest='ticket_purchase', action='store_true', help='Charge purchase; defaults to retaining stock')
@@ -432,7 +434,7 @@ def _main():
         self_test()
         return 0
     c, raw = load_config()
-    blocked = blockers(c, raw, args.allow_http_qr or args.logout_session or args.probe_session or args.ticket_inventory or args.settle_basic or args.ticket_purchase or args.game_charge or args.upload_game_scores)
+    blocked = blockers(c, raw, args.allow_http_qr or args.logout_session or args.probe_session or args.ticket_inventory or args.settle_basic or args.ticket_purchase or args.game_charge or args.upload_game_scores or args.upload_typed)
     if args.check or blocked:
         print(json.dumps({'status':'blocked' if blocked else 'ready', 'blockers':blocked, 'requests_live':0}))
         return 2 if blocked else 0
@@ -590,6 +592,34 @@ def _main():
             charge_id=ticket['charge_id'], action=ticket['action'])
         print(json.dumps(result, ensure_ascii=False))
         return 0 if result['status'] == 'verified' else 3
+    if args.upload_typed:
+        if not args.session_owner or args.qr_file or args.qr_stdin or args.logout or not args.upload_operation:
+            raise SafeFailure('typed_upload_inputs_rejected')
+        if len(args.upload_operation) > 4096 or not 1 <= args.page_budget <= 512:
+            raise SafeFailure('typed_upload_budget')
+        operation = m.object_json(args.upload_operation.encode())
+        sys.path.insert(0, str(Path(__file__).with_name('plugin')))
+        from upload_commands import validate_operation
+        operation = validate_operation(operation)
+        profile = m.object_json(private_read(PRIVATE / 'ticket-machine-profile.json', 65536))
+        if set(profile) != {'machine', 'extend_flags'}:
+            raise SafeFailure('typed_upload_profile_rejected')
+        from settlement_collect import collect_snapshot
+        from typed_settlement import submit_typed
+        transport = Transport(c, total=180, allow_settlement=True)
+        client = m.Client(c, transport)
+        session = restore_session(args.session_owner, client, transport)
+        kinds = (operation['kind'],) if operation['operation'] == 'item' else (1,)
+        snapshot = collect_snapshot(client, session, captured_at=int(time.time()),
+            extend_flags=profile['extend_flags'], item_kinds=kinds, page_budget=args.page_budget)
+        from ticket_machine import resolve_machine
+        machine = resolve_machine(profile['machine'], snapshot, c, client._login_inputs)
+        catalog = json.loads(Path(__file__).with_name('plugin').joinpath('data/music_data.json').read_text())
+        result = submit_typed(client, session, owner=args.session_owner, private=PRIVATE,
+            snapshot=snapshot, machine=machine, auth_date_time=client.auth_date_time,
+            catalog=catalog, operation=operation)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result['status'] in ('verified', 'unchanged') else 3
     if args.upload_game_scores:
         if (not args.session_owner or args.qr_file or args.qr_stdin or args.logout
                 or not args.score_document or args.settlement_plan):

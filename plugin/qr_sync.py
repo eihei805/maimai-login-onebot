@@ -33,7 +33,7 @@ CONSENT = ('取分会将二维码发送到游戏的原始 HTTP 接口（未加�
            '可用 /撤销HTTP取分 撤回后续取分授权；取分结果会私密保存在服务器供后续上传使用。')
 ONE_USE = ('二维码为一次性码，请在公众号显示的有效期内使用；本机器人已尝试的码（包括失败或超时）不会再次提交，'
            '本地尝试记录不代表官方已消费。取分登录后，上机前请从公众号重新获取新码。')
-HELP = '私聊用法：/login 或 /取分 <SGWCMAID二维码文本>，或直接发送二维码文本：取分并保留会话；登录成功 60 秒后可 /logout，14 分钟后自动尝试正常登出，失败保留记录并通知，可 /logout 重试。/清理会话 归档可确认失效的记录。仅支持文本。' + ONE_USE
+HELP = '私聊用法：/login 或 /取分 <SGWCMAID二维码文本>，或直接发送二维码文本：取分并保留会话；登录成功 60 秒后可 /logout，14 分钟后自动尝试正常登出，失败保留记录并通知，可 /logout 重试。/清理会话 归档可确认失效的记录。仅支持文本。/上传物品 类型 id；/上传成绩 名称/id 等级 成绩（1010000=101.0000%）。' + ONE_USE
 
 
 class CaptureError(RuntimeError):
@@ -493,6 +493,20 @@ def game_score_upload(user, *, private=PRIVATE, client=CLIENT, timeout=210):
         raise CaptureError('game_score_response_invalid')
     return data
 
+def typed_upload(user, operation, *, private=PRIVATE, client=CLIENT, timeout=210):
+    session_file(user, private)
+    result = subprocess.run([sys.executable, str(client), '--upload-typed',
+        '--session-owner', user, '--upload-operation', json.dumps(operation, ensure_ascii=False)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        timeout=timeout, check=False, shell=False, **locked_subprocess_args())
+    if len(result.stdout) > 65536:
+        raise CaptureError('upload_response_size')
+    payload = json.loads(result.stdout)
+    if type(payload) is not dict or payload.get('status') not in (
+            'verified', 'unchanged', 'rejected', 'ambiguous', 'acknowledged_unverified'):
+        raise CaptureError('upload_response_invalid')
+    return payload
+
 
 class QRSync:
     def __init__(self, private: Path = PRIVATE, *, runner=capture, cooldown=60, on_result=None,
@@ -568,6 +582,27 @@ class QRSync:
                 try:
                     worker = threading.Thread(target=self._cleanup_work, args=(user, send), daemon=True, name='qr-cleanup')
                     worker.start()
+                except Exception:
+                    self.gate.release()
+                    raise
+                return True
+            if text.startswith(('/上传物品', '/上传成绩')):
+                from upload_commands import parse_command
+                try:
+                    catalog = json.loads(Path(__file__).with_name('data').joinpath('music_data.json').read_text()) if text.startswith('/上传成绩') else []
+                    operation = parse_command(text, catalog)
+                except ValueError as exc:
+                    send(int(user), str(exc))
+                    return True
+                except Exception:
+                    send(int(user), '曲目资料暂不可用，本次未上传。')
+                    return True
+                if not self.gate.acquire(blocking=False):
+                    send(int(user), '当前有游戏会话操作正在进行，请稍后再试。')
+                    return True
+                try:
+                    threading.Thread(target=self._typed_work, args=(user, operation, send),
+                                     daemon=True, name='qr-typed-upload').start()
                 except Exception:
                     self.gate.release()
                     raise
@@ -675,6 +710,33 @@ class QRSync:
             send(int(user), '登出接口已接受；游戏侧会话释放尚未核验，如仍提示占用，请等待游戏侧解除后再登录。')
         except Exception:
             send(int(user), '登出未确认，会话记录保留；请检查游戏状态后重试 /logout。')
+        finally:
+            self.gate.release()
+
+    @serialized_worker
+    def _typed_work(self, user, operation, send):
+        try:
+            record = session_record(user, self.private)
+            if record is None or record.get('state') != 'active':
+                send(int(user), '没有可用的保留会话；请先 /login，本次未上传。')
+                return
+            result = typed_upload(user, operation, private=self.private)
+            status = result['status']
+            label = '物品' if operation['operation'] == 'item' else '成绩'
+            if status == 'verified':
+                text = label + '已提交，并通过目标数据和券库存读回核对；未使用券。'
+            elif status == 'unchanged':
+                text = '目标已拥有或成绩未超过历史最佳，本次没有发送写入。'
+            elif status == 'rejected':
+                reason = result.get('reason')
+                messages = {'score_not_improved': '成绩未超过历史最佳，本次没有发送写入。',
+                    'already_claimed': '当前会话已执行过一次写入尝试；不会重复提交，请先核对账号。'}
+                text = messages.get(reason, label + '上传前校验未通过，本次未发送结算。')
+            else:
+                text = label + '写入结果未全部确认，请先核对账号；不要重复上传。'
+            send(int(user), text)
+        except Exception:
+            send(int(user), '上传结果未确认，请先核对账号；不要重复提交。')
         finally:
             self.gate.release()
 
