@@ -471,7 +471,9 @@ def format_ticket_result(result, charge_id):
     if status == 'purchase_verified_settlement_not_sent':
         return '购买已通过库存读回核对，但测试结算未发送；请先 /查券 或在机台核对，不要重复购买。'
     if status == 'rejected':
-        return '本次购券流程未执行完成。请检查会话与机台测试配置；不要更换二维码反复尝试。'
+        if result.get('reason') == 'already_claimed':
+            return '当前会话已有一次写入尝试，本次购券被防重复保护拦截，没有再次发送购买请求。上次结果可能未确认，请先 /查券 或在机台核对；不要重新登录反复购买。'
+        return '购券前校验未通过，本次没有发送购买请求；请核对会话、券库存与机台配置。'
     if status == 'acknowledged_unverified':
         return '服务器已应答，但购券或结算读回尚未全部确认；请先 /查券 或在机台核对，不要重复购买。'
     return '购券结果不确定，可能已经写入；请先 /查券 或在机台核对，不要重复购买。'

@@ -69,6 +69,12 @@ class TicketCommandTests(unittest.TestCase):
         self.assertIn('未执行用券游玩', held)
         self.assertIn('结算未发送', q.format_ticket_result(dict(status='purchase_verified_settlement_not_sent'), 2))
 
+    def test_claimed_result_explains_duplicate_protection(self):
+        text = q.format_ticket_result(dict(status='rejected', reason='already_claimed'), 2)
+        self.assertIn('防重复保护', text)
+        self.assertIn('没有再次发送', text)
+        self.assertNotIn('机台测试配置', text)
+
     def test_missing_plan_explicitly_says_no_request(self):
         self.record()
         (self.private / ('settlement-plan-' + self.uid + '-ticket-hold-2.json')).unlink()
