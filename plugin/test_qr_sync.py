@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 import main
 import qr_sync as q
 
+QR_NEW = 'SGWCMAID' + 'X' * 12 + 'B' * 64
 QR = 'SGWCMAID' + 'X' * 12 + 'A' * 64
 USER = '12345678'
 
@@ -55,7 +56,7 @@ class QRTests(unittest.TestCase):
         self.assertTrue(all(QR not in text for _,text in self.sent))
     def test_success_raw_and_command(self):
         self.consent()
-        for text in (QR, '/取分 '+QR):
+        for text in (QR, '/取分 '+QR_NEW):
             self.sync.next_allowed.clear()
             self.sync.handle(self.event(text), self.send); self.wait()
         self.assertEqual(self.sync.runner.call_count,2)
@@ -102,7 +103,7 @@ class QRTests(unittest.TestCase):
         self.sync.handle(self.event(QR),self.send); self.wait()
         callback.assert_not_called(); self.assertIn('部分完成',self.sent[-1][1])
         self.result.summary['status']='complete'; self.sync.next_allowed.clear()
-        self.sync.handle(self.event(QR),self.send); self.wait()
+        self.sync.handle(self.event(QR_NEW),self.send); self.wait()
         callback.assert_called_once_with(self.result,self.send)
     def test_args_result_mode_and_timeout(self):
         def run(argv,**kwargs):

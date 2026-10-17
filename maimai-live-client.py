@@ -92,7 +92,11 @@ class GameCookiePolicy(http.cookiejar.DefaultCookiePolicy):
         return self.allowed(request) and super().return_ok(cookie, request)
 
 class Transport:
-    def __init__(self, c, timeout=15, total=180, limit=8*1024*1024+65536, allow_http_qr=False):
+    def __init__(self, c, timeout=15, total=180, limit=8*1024*1024+65536, allow_http_qr=False, allow_settlement=False, allow_ticket_purchase=False):
+        self.allow_ticket_purchase = allow_ticket_purchase
+        self._ticket_purchase_used = False
+        self.allow_settlement = allow_settlement
+        self._settlement_used = False
         self.config, self.timeout, self.limit = c, timeout, limit
         self.deadline = time.monotonic() + total
         self.calls, self.stage, self.last_error = 0, 'none', None
@@ -122,6 +126,14 @@ class Transport:
                 if self._login_used:
                     raise SafeFailure('transport_single_user_only')
                 self._login_used = True
+            if req.stage == 'UpsertUserChargelogApi':
+                if not self.allow_ticket_purchase or self._ticket_purchase_used:
+                    raise SafeFailure('ticket_purchase_not_authorized_or_already_attempted')
+                self._ticket_purchase_used = True
+            if req.stage == 'UpsertUserAllApi':
+                if not self.allow_settlement or self._settlement_used:
+                    raise SafeFailure('settlement_not_authorized_or_already_attempted')
+                self._settlement_used = True
             if req.method != 'POST':
                 raise SafeFailure('method_rejected')
             if req.stage == 'QRLookup':
@@ -130,7 +142,7 @@ class Transport:
                 self._qr_used = True
                 valid = req.url == self.config.qr_url
             else:
-                valid = req.stage in ('UserLoginApi', 'GetUserMusicApi', 'GetUserDataApi', 'UserLogoutApi', 'GetUserChargeApi') and req.url.startswith(self.config.game_base) and bool(re.fullmatch('[0-9a-f]{32}', req.url[len(self.config.game_base):]))
+                valid = (req.stage == 'UpsertUserAllApi' and self.allow_settlement or req.stage == 'UpsertUserChargelogApi' and self.allow_ticket_purchase or req.stage in ('UserLoginApi', 'GetUserMusicApi', 'GetUserDataApi', 'UserLogoutApi', 'GetUserChargeApi', 'GetGameChargeApi', 'GetUserItemApi', 'GetUserExtendApi', 'GetUserOptionApi', 'GetUserRatingApi', 'GetUserCharacterApi', 'GetUserFavoriteApi', 'GetUserMissionDataApi', 'GetUserActivityApi')) and req.url.startswith(self.config.game_base) and bool(re.fullmatch('[0-9a-f]{32}', req.url[len(self.config.game_base):]))
             scheme = urllib.parse.urlsplit(req.url).scheme
             allowed_scheme = scheme == 'https' or (req.stage == 'QRLookup' and self.allow_http_qr and scheme == 'http')
             if not valid or not allowed_scheme:
@@ -265,6 +277,7 @@ def persist_session(owner, client, transport, *, login_success_epoch=None):
         policy['login_success_epoch'] = login_success_epoch
     write_session(owner, {'state':'active', 'session':dataclasses.asdict(client.session),
         'inputs':dataclasses.asdict(client._login_inputs),
+        'auth_date_time':vars(client).get('auth_date_time', previous.get('auth_date_time')),
         'game_base':client.config.game_base, 'chip_id':client.config.chip_id,
         'cookies':[vars(cookie) for cookie in transport.cookies], **policy})
 
@@ -289,6 +302,10 @@ def restore_session(owner, client, transport):
             raise SafeFailure('session_cookies_invalid')
         transport.cookies.set_cookie(cookie)
     client.session = session
+    auth = data.get('auth_date_time')
+    if auth is not None and (type(auth) is not int or auth <= 0):
+        raise SafeFailure('session_auth_time_invalid')
+    client.auth_date_time = auth
     client._login_inputs = inputs
     client._login_attempted = True
     transport.identity = str(session.user_id)
@@ -393,6 +410,12 @@ def _main():
     mode.add_argument('--logout-session', action='store_true')
     mode.add_argument('--probe-session', action='store_true')
     mode.add_argument('--ticket-inventory', action='store_true')
+    mode.add_argument('--game-charge', action='store_true', help='Read current ticket offerings without login or QR')
+    mode.add_argument('--settle-basic', action='store_true')
+    mode.add_argument('--ticket-purchase', '--buy-ticket', dest='ticket_purchase', action='store_true', help='Charge purchase; defaults to retaining stock')
+    parser.add_argument('--charge-id', type=int, choices=(2, 3))
+    parser.add_argument('--ticket-action', choices=('hold', 'buy_use'))
+    parser.add_argument('--settlement-plan', type=Path)
     qr = parser.add_mutually_exclusive_group()
     qr.add_argument('--qr-file', type=Path)
     qr.add_argument('--qr-stdin', action='store_true')
@@ -407,10 +430,41 @@ def _main():
         self_test()
         return 0
     c, raw = load_config()
-    blocked = blockers(c, raw, args.allow_http_qr or args.logout_session or args.probe_session or args.ticket_inventory)
+    blocked = blockers(c, raw, args.allow_http_qr or args.logout_session or args.probe_session or args.ticket_inventory or args.settle_basic or args.ticket_purchase or args.game_charge)
     if args.check or blocked:
         print(json.dumps({'status':'blocked' if blocked else 'ready', 'blockers':blocked, 'requests_live':0}))
         return 2 if blocked else 0
+    if args.game_charge:
+        if args.session_owner or args.qr_file or args.qr_stdin or args.logout:
+            raise SafeFailure('game_charge_inputs_rejected')
+        transport = Transport(c, total=30)
+        transport.identity = '0'
+        try:
+            reply = m.Client(c, transport)._game('GetGameChargeApi', {'isAll': False}, '0')
+            if 'returnCode' in reply and (type(reply['returnCode']) is not int or reply['returnCode'] != 1):
+                raise ValueError('game_charge_rejected')
+            rows = reply.get('gameChargeList')
+            if type(rows) is not list or len(rows) > 4096 or type(reply.get('length')) is not int or reply['length'] != len(rows):
+                raise ValueError('game_charge_schema')
+            seen, output = set(), []
+            for row in rows:
+                if type(row) is not dict:
+                    raise ValueError('game_charge_schema')
+                for key in ('orderId', 'chargeId', 'price'):
+                    if type(row.get(key)) is not int or row[key] < 0:
+                        raise ValueError('game_charge_schema')
+                if row['chargeId'] in seen:
+                    raise ValueError('game_charge_duplicate')
+                seen.add(row['chargeId'])
+                for key in ('startDate', 'endDate'):
+                    if type(row.get(key)) is not str or not re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', row[key]):
+                        raise ValueError('game_charge_schema')
+                output.append({key: row[key] for key in ('orderId', 'chargeId', 'price', 'startDate', 'endDate')})
+        except Exception:
+            print(json.dumps({'status': 'indeterminate', 'reason': transport.last_error or 'game_charge_protocol_error', 'requests': transport.calls}))
+            return 5
+        print(json.dumps({'status': 'ok', 'offerings': output, 'target_listed': {str(cid): cid in seen for cid in (2, 3)}, 'requests': transport.calls}))
+        return 0
     if args.logout_session:
         if not args.session_owner or args.qr_file or args.qr_stdin or args.logout:
             raise SafeFailure('logout_inputs_rejected')
@@ -454,6 +508,126 @@ def _main():
             return 5
         print(json.dumps({'status':'alive', 'probe':'ok'}))
         return 0
+    if args.ticket_purchase:
+        if not args.session_owner or args.qr_file or args.qr_stdin or args.logout or not args.settlement_plan:
+            raise SafeFailure('ticket_purchase_inputs_rejected')
+        if args.settlement_plan.parent != PRIVATE or not args.settlement_plan.name.startswith('settlement-plan-'):
+            raise SafeFailure('settlement_plan_path_rejected')
+        plan = m.object_json(private_read(args.settlement_plan, 65536))
+        required_plan = {'owner', 'machine', 'extend_flags', 'auth_date_time'}
+        optional_plan = {'kind', 'item_ids', 'ticket'}
+        if not required_plan <= set(plan) or set(plan) - required_plan - optional_plan or plan['owner'] != args.session_owner:
+            raise SafeFailure('ticket_plan_rejected')
+        plan.setdefault('kind', 1)
+        plan.setdefault('item_ids', [])
+        ticket = plan.get('ticket', {})
+        if type(ticket) is not dict:
+            raise SafeFailure('ticket_plan_rejected')
+        ticket = ticket.copy()
+        if args.charge_id is not None:
+            if 'charge_id' in ticket and ticket['charge_id'] != args.charge_id:
+                raise SafeFailure('conflicting_ticket_target')
+            ticket['charge_id'] = args.charge_id
+        if args.ticket_action is not None:
+            if 'action' in ticket and ticket['action'] != args.ticket_action:
+                raise SafeFailure('conflicting_ticket_action')
+            ticket['action'] = args.ticket_action
+        ticket.setdefault('action', 'hold')
+        if (type(ticket) is not dict or set(ticket) != {'charge_id', 'action'} or
+                type(ticket['charge_id']) is not int or ticket['charge_id'] not in (2, 3) or
+                ticket['action'] not in ('hold', 'buy_use') or
+                type(plan['kind']) is not int or plan['kind'] != 1 or
+                type(plan['item_ids']) is not list or plan['item_ids'] != []):
+            raise SafeFailure('ticket_target_rejected')
+        if type(plan['machine']) is not dict or type(plan['extend_flags']) is not dict:
+            raise SafeFailure('ticket_plan_rejected')
+        if plan['auth_date_time'] != 'session' and (type(plan['auth_date_time']) is not int or plan['auth_date_time'] <= 0):
+            raise SafeFailure('settlement_auth_time_required')
+        simulated = plan['machine'].get('scenario') == 'sdgb_normal_returning_all_miss'
+        offset = 28800 if simulated else plan['machine'].get('utcOffsetSeconds')
+        # TicketManager.GetValidDate uses cabinet local time; this protocol is
+        # China-local. Reject a contradictory machine clock before collection.
+        if type(offset) is not int or offset != 28800:
+            raise SafeFailure('ticket_machine_requires_china_time')
+        if not simulated and (plan['machine'].get('clientId') != c.chip_id or plan['machine'].get('placeId') != raw.get('place_id') or plan['machine'].get('regionId') != raw.get('region_id')):
+            raise SafeFailure('ticket_machine_identity_mismatch')
+        if not 1 <= args.page_budget <= 512:
+            raise SafeFailure('settlement_page_budget_rejected')
+        sys.path.insert(0, str(Path(__file__).with_name('plugin')))
+        from settlement_collect import collect_snapshot
+        from ticket_settlement import submit_ticket
+        transport = Transport(c, total=180, allow_settlement=ticket['action'] == 'buy_use', allow_ticket_purchase=True)
+        client = m.Client(c, transport)
+        try:
+            session = restore_session(args.session_owner, client, transport)
+        except FileNotFoundError:
+            print(json.dumps({'status': 'rejected', 'reason': 'session_required', 'requests': 0, 'retry_allowed': False}))
+            return 3
+        auth_date_time = client.auth_date_time if plan['auth_date_time'] == 'session' else plan['auth_date_time']
+        if type(auth_date_time) is not int or auth_date_time <= 0:
+            raise SafeFailure('session_auth_time_unavailable')
+        if ticket['action'] == 'hold':
+            from ticket_settlement import collect_hold_snapshot
+            snapshot = collect_hold_snapshot(client, session, captured_at=int(time.time()))
+        else:
+            snapshot = collect_snapshot(client, session, captured_at=int(time.time()),
+                extend_flags=plan['extend_flags'], item_kinds=(plan['kind'],), page_budget=args.page_budget)
+        if simulated:
+            from ticket_machine import resolve_machine
+            try:
+                plan['machine'] = resolve_machine(plan['machine'], snapshot, c, client._login_inputs)
+            except Exception:
+                raise SafeFailure('invalid_ticket_simulation_profile') from None
+        catalog = json.loads(Path(__file__).with_name('plugin').joinpath('data/music_data.json').read_text())
+        stamp = int(time.time()) + offset
+        build_args = dict(auth_date_time=auth_date_time, kind=plan['kind'], item_ids=[],
+            play_date_time=stamp, settle_date_time=stamp, user_id=session.user_id,
+            login_id=session.login_id, login_date_time=session.login_date_time, catalog=catalog)
+        result = submit_ticket(client, session, owner=args.session_owner, private=PRIVATE,
+            snapshot=snapshot, machine=plan['machine'], build_args=build_args,
+            charge_id=ticket['charge_id'], action=ticket['action'])
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result['status'] == 'verified' else 3
+    if args.settle_basic:
+        if not args.session_owner or args.qr_file or args.qr_stdin or args.logout or not args.settlement_plan:
+            raise SafeFailure('settlement_inputs_rejected')
+        # Locally prepared explicit machine inputs only; never accept chat JSON.
+        if args.settlement_plan.parent != PRIVATE or not args.settlement_plan.name.startswith('settlement-plan-'):
+            raise SafeFailure('settlement_plan_path_rejected')
+        plan = m.object_json(private_read(args.settlement_plan, 65536))
+        expected = {'owner', 'machine', 'extend_flags', 'auth_date_time', 'kind', 'item_ids'}
+        if set(plan) != expected or plan['owner'] != args.session_owner:
+            raise SafeFailure('settlement_plan_rejected')
+        if type(plan['machine']) is not dict or type(plan['extend_flags']) is not dict:
+            raise SafeFailure('settlement_plan_rejected')
+        # This entry point is scoped to the single explicitly authorized test.
+        if type(plan['kind']) is not int or plan['kind'] != 1 or plan['item_ids'] != [201] or any(type(v) is not int for v in plan['item_ids']):
+            raise SafeFailure('settlement_target_rejected')
+        if type(plan['auth_date_time']) is not int or plan['auth_date_time'] <= 0:
+            raise SafeFailure('settlement_auth_time_required')
+        if not 1 <= args.page_budget <= 512:
+            raise SafeFailure('settlement_page_budget_rejected')
+        sys.path.insert(0, str(Path(__file__).with_name('plugin')))
+        from settlement_collect import collect_snapshot
+        from settlement_submit import submit_basic
+        transport = Transport(c, total=180, allow_settlement=True)
+        client = m.Client(c, transport)
+        session = restore_session(args.session_owner, client, transport)
+        snapshot = collect_snapshot(client, session, captured_at=int(time.time()),
+            extend_flags=plan['extend_flags'], item_kinds=(plan['kind'],), page_budget=args.page_budget)
+        catalog = json.loads(Path(__file__).with_name('plugin').joinpath('data/music_data.json').read_text())
+        build_args = {k: plan[k] for k in ('auth_date_time', 'kind', 'item_ids')}
+        offset = plan['machine'].get('utcOffsetSeconds')
+        if type(offset) is not int:
+            raise SafeFailure('settlement_offset_required')
+        simulated_at = int(time.time()) + offset
+        build_args.update(play_date_time=simulated_at, settle_date_time=simulated_at)
+        build_args.update(user_id=session.user_id, login_id=session.login_id,
+            login_date_time=session.login_date_time, catalog=catalog)
+        result = submit_basic(client, session, owner=args.session_owner, private=PRIVATE,
+            snapshot=snapshot, machine=plan['machine'], build_args=build_args)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result['status'] == 'verified' else 3
     if args.ticket_inventory:
         if not args.session_owner or args.qr_file or args.qr_stdin or args.logout:
             raise SafeFailure('ticket_inputs_rejected')

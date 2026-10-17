@@ -274,6 +274,7 @@ class Client:
             require(type(reply['returnCode']) is int and reply['returnCode'] == 1, 'Login rejected')
         login_time = reply.get('loginDateTime', epoch)
         require(integer(login_time), 'Invalid loginDateTime')
+        self.auth_date_time = epoch  # Exact dateTime submitted for this committed login.
         self.session = Session(uid, reply['loginId'], login_time, token, inputs.user_agent_identity)
         self._login_inputs = inputs
         return self.session
@@ -355,6 +356,41 @@ class Client:
             except ProtocolError as exc:
                 return Scores(False, rows, str(exc), pages, cursor)
         return Scores(False, rows, 'page_budget', pages, cursor)
+
+    def item_inventory(self, session, kind, page_budget=128):
+        """Read a complete cosmetic-kind baseline; partial pages never escape."""
+        self._current(session)
+        require(type(kind) is int and kind in (1, 2, 3, 10, 11), 'Invalid cosmetic kind')
+        require(type(page_budget) is int and 1 <= page_budget <= 1024, 'Invalid item page budget')
+        cursor, rows, seen, cursors = kind * 10000000000, [], set(), set()
+        for _ in range(page_budget):
+            require(cursor not in cursors, 'Item cursor cycle')
+            cursors.add(cursor)
+            reply = self._game('GetUserItemApi', {'userId': session.user_id,
+                'nextIndex': cursor, 'maxCount': 100}, session.user_agent_identity)
+            if 'returnCode' in reply:
+                require(type(reply['returnCode']) is int and reply['returnCode'] == 1,
+                        'Item returnCode rejected')
+            require(type(reply.get('userId')) is int and reply['userId'] == session.user_id,
+                    'Item user mismatch')
+            require(type(reply.get('itemKind')) is int and reply['itemKind'] == kind,
+                    'Item kind mismatch')
+            page, nxt = reply.get('userItemList'), reply.get('nextIndex')
+            # Server may ignore maxCount (observed complete response: 104 rows).
+            require(type(page) is list and len(page) <= 10000 and integer(nxt), 'Invalid item page')
+            for row in page:
+                require(type(row) is dict and all(integer(row.get(k)) and row[k] <= 2147483647
+                        for k in ('itemKind', 'itemId', 'stock')) and
+                        row['itemKind'] == kind and type(row.get('isValid')) is bool,
+                        'Invalid item row')
+                require(row['itemId'] not in seen, 'Duplicate item identity')
+                seen.add(row['itemId'])
+                rows.append({k: row[k] for k in ('itemKind', 'itemId', 'stock', 'isValid')})
+            if nxt == 0:
+                return rows
+            require(bool(page) and nxt // 10000000000 == kind, 'Invalid item continuation')
+            cursor = nxt
+        raise ProtocolError('Item page budget exhausted')
 
     def ticket_inventory(self, session):
         # Read-only inventory observation: one GetUserChargeApi, nothing written,

@@ -1,0 +1,603 @@
+{
+  "assembly_sha256": "e4f4631745ab976e29a2828d0919c1fca3f8a28888cea583a920d403d6412a91",
+  "types": {
+    "UserDetail": {
+      "accessCode": "str",
+      "userName": "str",
+      "isNetMember": "int",
+      "point": "int",
+      "totalPoint": "int",
+      "iconId": "int",
+      "plateId": "int",
+      "titleId": "int",
+      "partnerId": "int",
+      "frameId": "int",
+      "selectMapId": "int",
+      "totalAwake": "int",
+      "gradeRating": "int",
+      "musicRating": "int",
+      "playerRating": "int",
+      "highestRating": "int",
+      "gradeRank": "int",
+      "classRank": "int",
+      "courseRank": "int",
+      "charaSlot": {
+        "array": "int"
+      },
+      "charaLockSlot": {
+        "array": "int"
+      },
+      "contentBit": "ulong",
+      "playCount": "int",
+      "currentPlayCount": "int",
+      "renameCredit": "int",
+      "mapStock": "int",
+      "eventWatchedDate": "str",
+      "lastGameId": "str",
+      "lastRomVersion": "str",
+      "lastDataVersion": "str",
+      "lastLoginDate": "str",
+      "lastPlayDate": "str",
+      "lastPlayCredit": "int",
+      "lastPlayMode": "int",
+      "lastPlaceId": "int",
+      "lastPlaceName": "str",
+      "lastAllNetId": "int",
+      "lastRegionId": "int",
+      "lastRegionName": "str",
+      "lastClientId": "str",
+      "lastCountryCode": "str",
+      "lastSelectEMoney": "int",
+      "lastSelectTicket": "int",
+      "lastSelectCourse": "int",
+      "lastCountCourse": "int",
+      "firstGameId": "str",
+      "firstRomVersion": "str",
+      "firstDataVersion": "str",
+      "firstPlayDate": "str",
+      "compatibleCmVersion": "str",
+      "dailyBonusDate": "str",
+      "dailyCourseBonusDate": "str",
+      "lastPairLoginDate": "str",
+      "lastTrialPlayDate": "str",
+      "playVsCount": "int",
+      "playSyncCount": "int",
+      "winCount": "int",
+      "helpCount": "int",
+      "comboCount": "int",
+      "totalDeluxscore": "long",
+      "totalBasicDeluxscore": "long",
+      "totalAdvancedDeluxscore": "long",
+      "totalExpertDeluxscore": "long",
+      "totalMasterDeluxscore": "long",
+      "totalReMasterDeluxscore": "long",
+      "totalSync": "int",
+      "totalBasicSync": "int",
+      "totalAdvancedSync": "int",
+      "totalExpertSync": "int",
+      "totalMasterSync": "int",
+      "totalReMasterSync": "int",
+      "totalAchievement": "long",
+      "totalBasicAchievement": "long",
+      "totalAdvancedAchievement": "long",
+      "totalExpertAchievement": "long",
+      "totalMasterAchievement": "long",
+      "totalReMasterAchievement": "long",
+      "playerOldRating": "long",
+      "playerNewRating": "long",
+      "banState": "int",
+      "friendRegistSkip": "int",
+      "dateTime": "long"
+    },
+    "UserExtend": {
+      "selectMusicId": "int",
+      "selectDifficultyId": "int",
+      "categoryIndex": "int",
+      "musicIndex": "int",
+      "extraFlag": "int",
+      "selectScoreType": "int",
+      "extendContentBit": "ulong",
+      "isPhotoAgree": "bool",
+      "isGotoCodeRead": "bool",
+      "selectResultDetails": "bool",
+      "selectResultScoreViewType": "int",
+      "sortCategorySetting": "int",
+      "sortMusicSetting": "int",
+      "playStatusSetting": "int",
+      "selectedCardList": {
+        "array": "int"
+      },
+      "encountMapNpcList": {
+        "array": "MapEncountNpc"
+      }
+    },
+    "MapEncountNpc": {
+      "npcId": "int",
+      "musicId": "int"
+    },
+    "UserOption": {
+      "optionKind": "int",
+      "noteSpeed": "int",
+      "slideSpeed": "int",
+      "touchSpeed": "int",
+      "tapDesign": "int",
+      "holdDesign": "int",
+      "slideDesign": "int",
+      "starType": "int",
+      "outlineDesign": "int",
+      "noteSize": "int",
+      "slideSize": "int",
+      "touchSize": "int",
+      "starRotate": "int",
+      "dispCenter": "int",
+      "outFrameType": "int",
+      "dispChain": "int",
+      "dispRate": "int",
+      "dispBar": "int",
+      "touchEffect": "int",
+      "submonitorAnimation": "int",
+      "submonitorAchive": "int",
+      "submonitorAppeal": "int",
+      "matching": "int",
+      "trackSkip": "int",
+      "brightness": "int",
+      "mirrorMode": "int",
+      "dispJudge": "int",
+      "dispJudgePos": "int",
+      "dispJudgeTouchPos": "int",
+      "adjustTiming": "int",
+      "judgeTiming": "int",
+      "ansVolume": "int",
+      "tapHoldVolume": "int",
+      "criticalSe": "int",
+      "tapSe": "int",
+      "breakSe": "int",
+      "breakVolume": "int",
+      "exSe": "int",
+      "exVolume": "int",
+      "slideSe": "int",
+      "slideVolume": "int",
+      "breakSlideVolume": "int",
+      "touchVolume": "int",
+      "touchHoldVolume": "int",
+      "damageSeVolume": "int",
+      "headPhoneVolume": "int",
+      "sortTab": "int",
+      "sortMusic": "int"
+    },
+    "UserRating": {
+      "rating": "int",
+      "ratingList": {
+        "array": "UserRate"
+      },
+      "newRatingList": {
+        "array": "UserRate"
+      },
+      "nextRatingList": {
+        "array": "UserRate"
+      },
+      "nextNewRatingList": {
+        "array": "UserRate"
+      },
+      "udemae": "UserUdemae"
+    },
+    "UserRate": {
+      "musicId": "int",
+      "level": "int",
+      "romVersion": "uint",
+      "achievement": "uint"
+    },
+    "UserUdemae": {
+      "rate": "int",
+      "maxRate": "int",
+      "classValue": "int",
+      "maxClassValue": "int",
+      "totalWinNum": "uint",
+      "totalLoseNum": "uint",
+      "maxWinNum": "uint",
+      "maxLoseNum": "uint",
+      "winNum": "uint",
+      "loseNum": "uint",
+      "npcTotalWinNum": "uint",
+      "npcTotalLoseNum": "uint",
+      "npcMaxWinNum": "uint",
+      "npcMaxLoseNum": "uint",
+      "npcWinNum": "uint",
+      "npcLoseNum": "uint"
+    },
+    "UserPlaylog": {
+      "userId": "ulong",
+      "orderId": "int",
+      "playlogId": "ulong",
+      "version": "int",
+      "placeId": "int",
+      "placeName": "str",
+      "loginDate": "long",
+      "playDate": "str",
+      "userPlayDate": "str",
+      "type": "int",
+      "musicId": "int",
+      "level": "int",
+      "trackNo": "int",
+      "vsMode": "int",
+      "vsUserName": "str",
+      "vsStatus": "int",
+      "vsUserRating": "int",
+      "vsUserAchievement": "int",
+      "vsUserGradeRank": "int",
+      "vsRank": "int",
+      "playerNum": "int",
+      "playedUserId1": "ulong",
+      "playedUserName1": "str",
+      "playedMusicLevel1": "int",
+      "playedUserId2": "ulong",
+      "playedUserName2": "str",
+      "playedMusicLevel2": "int",
+      "playedUserId3": "ulong",
+      "playedUserName3": "str",
+      "playedMusicLevel3": "int",
+      "characterId1": "int",
+      "characterLevel1": "int",
+      "characterAwakening1": "int",
+      "characterId2": "int",
+      "characterLevel2": "int",
+      "characterAwakening2": "int",
+      "characterId3": "int",
+      "characterLevel3": "int",
+      "characterAwakening3": "int",
+      "characterId4": "int",
+      "characterLevel4": "int",
+      "characterAwakening4": "int",
+      "characterId5": "int",
+      "characterLevel5": "int",
+      "characterAwakening5": "int",
+      "achievement": "int",
+      "deluxscore": "int",
+      "scoreRank": "int",
+      "maxCombo": "int",
+      "totalCombo": "int",
+      "maxSync": "int",
+      "totalSync": "int",
+      "tapCriticalPerfect": "int",
+      "tapPerfect": "int",
+      "tapGreat": "int",
+      "tapGood": "int",
+      "tapMiss": "int",
+      "holdCriticalPerfect": "int",
+      "holdPerfect": "int",
+      "holdGreat": "int",
+      "holdGood": "int",
+      "holdMiss": "int",
+      "slideCriticalPerfect": "int",
+      "slidePerfect": "int",
+      "slideGreat": "int",
+      "slideGood": "int",
+      "slideMiss": "int",
+      "touchCriticalPerfect": "int",
+      "touchPerfect": "int",
+      "touchGreat": "int",
+      "touchGood": "int",
+      "touchMiss": "int",
+      "breakCriticalPerfect": "int",
+      "breakPerfect": "int",
+      "breakGreat": "int",
+      "breakGood": "int",
+      "breakMiss": "int",
+      "isTap": "bool",
+      "isHold": "bool",
+      "isSlide": "bool",
+      "isTouch": "bool",
+      "isBreak": "bool",
+      "isCriticalDisp": "bool",
+      "isFastLateDisp": "bool",
+      "fastCount": "int",
+      "lateCount": "int",
+      "isAchieveNewRecord": "bool",
+      "isDeluxscoreNewRecord": "bool",
+      "comboStatus": "int",
+      "syncStatus": "int",
+      "isClear": "bool",
+      "beforeRating": "int",
+      "afterRating": "int",
+      "beforeGrade": "int",
+      "afterGrade": "int",
+      "afterGradeRank": "int",
+      "beforeDeluxRating": "int",
+      "afterDeluxRating": "int",
+      "isPlayTutorial": "bool",
+      "isEventMode": "bool",
+      "isFreedomMode": "bool",
+      "playMode": "int",
+      "isNewFree": "bool",
+      "trialPlayAchievement": "int",
+      "extNum1": "int",
+      "extNum2": "int",
+      "extNum4": "int",
+      "extBool1": "bool",
+      "extBool2": "bool",
+      "extBool3": "bool"
+    },
+    "UserMusicDetail": {
+      "musicId": "int",
+      "level": "int",
+      "playCount": "uint",
+      "achievement": "uint",
+      "comboStatus": "int",
+      "syncStatus": "int",
+      "deluxscoreMax": "uint",
+      "scoreRank": "int",
+      "extNum1": "uint"
+    },
+    "UserWeeklyData": {
+      "lastLoginWeek": "str",
+      "beforeLoginWeek": "str",
+      "friendBonusFlag": "bool"
+    },
+    "UserCharge": {
+      "chargeId": "int",
+      "stock": "int",
+      "purchaseDate": "str",
+      "validDate": "str"
+    },
+    "UserFavorite": {
+      "itemKind": "int",
+      "itemIdList": {
+        "array": "int"
+      }
+    },
+    "UserActivity": {
+      "playList": {
+        "array": "UserAct"
+      },
+      "musicList": {
+        "array": "UserAct"
+      }
+    },
+    "UserAct": {
+      "kind": "int",
+      "id": "int",
+      "sortNumber": "long",
+      "param1": "int",
+      "param2": "int",
+      "param3": "int",
+      "param4": "int"
+    },
+    "UserMissionData": {
+      "type": "int",
+      "difficulty": "int",
+      "targetGenreId": "int",
+      "targetGenreTableId": "int",
+      "conditionGenreId": "int",
+      "conditionGenreTableId": "int",
+      "clearFlag": "bool"
+    },
+    "UserCharacter": {
+      "characterId": "int",
+      "level": "uint",
+      "awakening": "uint",
+      "useCount": "uint"
+    },
+    "User2pPlaylog": {
+      "userId1": "ulong",
+      "userId2": "ulong",
+      "userName1": "str",
+      "userName2": "str",
+      "regionId": "int",
+      "placeId": "int",
+      "user2pPlaylogDetailList": {
+        "array": "User2pPlaylogDetail"
+      }
+    },
+    "UserGamePlaylog": {
+      "playlogId": "ulong",
+      "version": "str",
+      "playDate": "str",
+      "playMode": "int",
+      "useTicketId": "int",
+      "playCredit": "int",
+      "playTrack": "int",
+      "clientId": "str",
+      "isPlayTutorial": "bool",
+      "isEventMode": "bool",
+      "isNewFree": "bool",
+      "playCount": "int",
+      "playSpecial": "int",
+      "playOtherUserId": "ulong"
+    },
+    "UserAll": {
+      "userData": {
+        "array": "UserDetail"
+      },
+      "userExtend": {
+        "array": "UserExtend"
+      },
+      "userOption": {
+        "array": "UserOption"
+      },
+      "userCharacterList": {
+        "array": "UserCharacter"
+      },
+      "userGhost": {
+        "array": "UserGhost"
+      },
+      "userMapList": {
+        "array": "UserMap"
+      },
+      "userLoginBonusList": {
+        "array": "UserLoginBonus"
+      },
+      "userRatingList": {
+        "array": "UserRating"
+      },
+      "userItemList": {
+        "array": "UserItem"
+      },
+      "userMusicDetailList": {
+        "array": "UserMusicDetail"
+      },
+      "userCourseList": {
+        "array": "UserCourse"
+      },
+      "userFriendSeasonRankingList": {
+        "array": "UserFriendSeasonRanking"
+      },
+      "userChargeList": {
+        "array": "UserCharge"
+      },
+      "userFavoriteList": {
+        "array": "UserFavorite"
+      },
+      "userActivityList": {
+        "array": "UserActivity"
+      },
+      "userMissionDataList": {
+        "array": "UserMissionData"
+      },
+      "userWeeklyData": "UserWeeklyData",
+      "userGamePlaylogList": {
+        "array": "UserGamePlaylog"
+      },
+      "user2pPlaylog": "User2pPlaylog",
+      "userIntimateList": {
+        "array": "UserIntimate"
+      },
+      "userShopItemStockList": {
+        "array": "UserShopStock"
+      },
+      "userGetPointList": {
+        "array": "UserGetPoint"
+      },
+      "userTradeItemList": {
+        "array": "UserTradeItem"
+      },
+      "userFavoritemusicList": {
+        "array": "UserFavoriteItem"
+      },
+      "userKaleidxScopeList": {
+        "array": "UserKaleidxScope"
+      },
+      "isNewCharacterList": "str",
+      "isNewMapList": "str",
+      "isNewLoginBonusList": "str",
+      "isNewItemList": "str",
+      "isNewMusicDetailList": "str",
+      "isNewCourseList": "str",
+      "isNewFavoriteList": "str",
+      "isNewFriendSeasonRankingList": "str",
+      "isNewUserIntimateList": "str",
+      "isNewFavoritemusicList": "str",
+      "isNewKaleidxScopeList": "str"
+    },
+    "UserGhost": {
+      "name": "str",
+      "iconId": "int",
+      "plateId": "int",
+      "titleId": "int",
+      "rate": "int",
+      "udemaeRate": "int",
+      "courseRank": "uint",
+      "classRank": "uint",
+      "classValue": "int",
+      "playDatetime": "str",
+      "shopId": "uint",
+      "regionCode": "int",
+      "typeId": "int",
+      "musicId": "int",
+      "difficulty": "int",
+      "version": "int",
+      "resultBitList": {
+        "array": "byte"
+      },
+      "resultNum": "int",
+      "achievement": "int"
+    },
+    "UserMap": {
+      "mapId": "int",
+      "distance": "uint",
+      "isLock": "bool",
+      "isClear": "bool",
+      "isComplete": "bool",
+      "unlockFlag": "int"
+    },
+    "UserLoginBonus": {
+      "bonusId": "int",
+      "point": "uint",
+      "isCurrent": "bool",
+      "isComplete": "bool"
+    },
+    "UserItem": {
+      "itemKind": "int",
+      "itemId": "int",
+      "stock": "int",
+      "isValid": "bool"
+    },
+    "UserCourse": {
+      "courseId": "int",
+      "isLastClear": "bool",
+      "totalRestlife": "uint",
+      "totalAchievement": "uint",
+      "totalDeluxscore": "uint",
+      "playCount": "uint",
+      "clearDate": "str",
+      "lastPlayDate": "str",
+      "bestAchievement": "uint",
+      "bestAchievementDate": "str",
+      "bestDeluxscore": "uint",
+      "bestDeluxscoreDate": "str"
+    },
+    "UserFriendSeasonRanking": {
+      "seasonId": "int",
+      "point": "int",
+      "rank": "int",
+      "rewardGet": "bool",
+      "userName": "str",
+      "recordDate": "str"
+    },
+    "UserIntimate": {
+      "partnerId": "int",
+      "intimateLevel": "int",
+      "intimateCountRewarded": "int"
+    },
+    "UserShopStock": {
+      "shopItemId": "int",
+      "tradeCount": "int"
+    },
+    "UserGetPoint": {
+      "getKind": "int",
+      "point": "long"
+    },
+    "UserTradeItem": {
+      "shopItemId": "long",
+      "point": "long",
+      "tradeCount": "int"
+    },
+    "UserFavoriteItem": {
+      "orderId": "ulong",
+      "id": "ulong"
+    },
+    "UserKaleidxScope": {
+      "gateId": "int",
+      "isGateFound": "bool",
+      "isKeyFound": "bool",
+      "isClear": "bool",
+      "totalRestLife": "int",
+      "totalAchievement": "int",
+      "totalDeluxscore": "int",
+      "bestAchievement": "int",
+      "bestDeluxscore": "int",
+      "bestAchievementDate": "str",
+      "bestDeluxscoreDate": "str",
+      "playCount": "int",
+      "clearDate": "str",
+      "lastPlayDate": "str",
+      "isInfoWatched": "bool"
+    },
+    "User2pPlaylogDetail": {
+      "musicId": "int",
+      "level": "int",
+      "achievement": "int",
+      "deluxscore": "int",
+      "userPlayDate": "str"
+    }
+  }
+}

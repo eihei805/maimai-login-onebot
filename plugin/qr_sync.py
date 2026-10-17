@@ -11,6 +11,7 @@ import contextlib
 import fcntl
 import math
 import functools
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -30,7 +31,9 @@ CONSENT = ('取分会将二维码发送到游戏的原始 HTTP 接口（未加�
            '并登录游戏读取成绩；所有取分均保留会话，登录成功 60 秒后可 /logout，14 分钟后自动尝试登出。仅发送你有权使用的二维码。'
            '如接受，请私聊发送 /同意HTTP取分，然后重新发送 /login <SGWCMAID二维码文本>。'
            '可用 /撤销HTTP取分 撤回后续取分授权；取分结果会私密保存在服务器供后续上传使用。')
-HELP = '私聊用法：/login 或 /取分 <SGWCMAID二维码文本>，或直接发送二维码文本：取分并保留会话；登录成功 60 秒后可 /logout，14 分钟后自动尝试正常登出，失败保留记录并通知，可 /logout 重试。/清理会话 归档可确认失效的记录。仅支持文本。'
+ONE_USE = ('二维码为一次性码，请在公众号显示的有效期内使用；本机器人已尝试的码（包括失败或超时）不会再次提交，'
+           '本地尝试记录不代表官方已消费。取分登录后，上机前请从公众号重新获取新码。')
+HELP = '私聊用法：/login 或 /取分 <SGWCMAID二维码文本>，或直接发送二维码文本：取分并保留会话；登录成功 60 秒后可 /logout，14 分钟后自动尝试正常登出，失败保留记录并通知，可 /logout 重试。/清理会话 归档可确认失效的记录。仅支持文本。' + ONE_USE
 
 
 class CaptureError(RuntimeError):
@@ -48,7 +51,7 @@ class CaptureResult:
 
 def sensitive_text(text: str) -> bool:
     # Broad guard, including malformed QR and secret-bearing commands.
-    return 'SGWCMAID' in text.upper() or text.lower().startswith(('/login', '/logout', '/清理会话')) or text.startswith(('/取分', '/同意HTTP取分', '/撤销HTTP取分', '/绑定', '/解绑', '/上传', '/查券'))
+    return 'SGWCMAID' in text.upper() or text.lower().startswith(('/login', '/logout', '/清理会话')) or text.startswith(('/取分', '/同意HTTP取分', '/撤销HTTP取分', '/绑定', '/解绑', '/上传', '/查券', '/购券'))
 
 
 def event_text(event: dict) -> str:
@@ -122,6 +125,38 @@ def serialized_worker(fn):
         with session_lock(self.private):
             return fn(self, *args, **kwargs)
     return wrapped
+
+def register_qr_attempt(qr: str, private: Path) -> bool:
+    """Durable global tombstone, called under session_lock before any runner.
+
+    An empty 0600 file named only by SHA256 never stores QR or QQ. Keep forever:
+    local time/expiry cannot prove a previously attempted code safe to replay.
+    O_EXCL also fails closed for existing files/symlinks or a crash mid-commit.
+    """
+    if getattr(_session_local, 'fd', None) is None or not valid_qr(qr):
+        raise CaptureError('qr_attempt_lock_required')
+    private_directory(private)
+    directory = private / 'qr-attempts'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    private_directory(directory)
+    digest = hashlib.sha256(qr.encode('ascii')).hexdigest()
+    try:
+        fd = os.open(directory / digest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return False
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    # Persist both the marker and the newly created directory before networking.
+    for path in (directory, private):
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    return True
+
 
 def logout_remaining(record, now=None):
     stamp = record.get('login_success_epoch')
@@ -372,15 +407,83 @@ def logout(user, *, private=PRIVATE, client=CLIENT, timeout=75):
     return True
 
 
+def prepare_ticket_plan(user, charge_id, private=PRIVATE):
+    private_directory(private)
+    session_file(user, private)  # validate owner before naming files
+    if type(charge_id) is not int or charge_id not in (2, 3):
+        raise CaptureError('invalid_ticket_target')
+    plan = private / ('settlement-plan-' + user + '-ticket-hold-' + str(charge_id) + '.json')
+    try:
+        return read_private(plan, 65536)
+    except FileNotFoundError:
+        pass
+    profile = read_private(private / 'ticket-machine-profile.json', 65536)
+    if type(profile) is not dict or type(profile.get('machine')) is not dict or type(profile.get('extend_flags')) is not dict:
+        raise CaptureError('ticket_profile_invalid')
+    data = dict(owner=user, machine=profile['machine'], extend_flags=profile['extend_flags'],
+        auth_date_time='session', kind=1, item_ids=[], ticket=dict(charge_id=charge_id, action='hold'))
+    fd = os.open(plan, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        json.dump(data, f)
+        f.flush()
+        os.fsync(f.fileno())
+    return data
+
+
+def ticket_purchase(user, charge_id, *, private=PRIVATE, client=CLIENT, timeout=210):
+    if type(charge_id) is not int or charge_id not in (2, 3):
+        raise CaptureError('invalid_ticket_target')
+    plan = private / ('settlement-plan-' + user + '-ticket-hold-' + str(charge_id) + '.json')
+    # Read and validate permissions before any subprocess/possible write.
+    data = read_private(plan, 65536)
+    if type(data) is not dict or data.get('owner') != user:
+        raise CaptureError('ticket_plan_binding')
+    if data.get('ticket') != {'charge_id': charge_id, 'action': 'hold'}:
+        raise CaptureError('ticket_plan_target')
+    completed = subprocess.run([sys.executable, str(client), '--ticket-purchase',
+        '--session-owner', user,
+        '--settlement-plan', str(plan)], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout,
+        check=False, shell=False, **locked_subprocess_args())
+    if len(completed.stdout) > 65536:
+        raise CaptureError('ticket_response_size')
+    try:
+        result = json.loads(completed.stdout)
+    except Exception:
+        raise CaptureError('ticket_response_invalid') from None
+    if type(result) is not dict or result.get('status') not in (
+            'verified', 'rejected', 'ambiguous', 'acknowledged_unverified',
+            'purchase_verified_settlement_not_sent'):
+        raise CaptureError('ticket_response_invalid')
+    return result
+
+
+def format_ticket_result(result, charge_id):
+    # Only fixed labels; never expose arbitrary response/error strings.
+    status = result.get('status')
+    if status == 'verified':
+        if result.get('outcome') == 'purchased_and_consumed_in_play':
+            return f'{charge_id} 倍券购买及本次测试局使用已获服务器应答并通过读回核对；该券已在测试结算中消耗，不会留作下次使用。'
+        return f'{charge_id} 倍券购买已获服务器应答并通过库存读回核对；未执行用券游玩。'
+    if status == 'purchase_verified_settlement_not_sent':
+        return '购买已通过库存读回核对，但测试结算未发送；请先 /查券 或在机台核对，不要重复购买。'
+    if status == 'rejected':
+        return '本次购券流程未执行完成。请检查会话与机台测试配置；不要更换二维码反复尝试。'
+    if status == 'acknowledged_unverified':
+        return '服务器已应答，但购券或结算读回尚未全部确认；请先 /查券 或在机台核对，不要重复购买。'
+    return '购券结果不确定，可能已经写入；请先 /查券 或在机台核对，不要重复购买。'
+
+
 class QRSync:
     def __init__(self, private: Path = PRIVATE, *, runner=capture, cooldown=60, on_result=None,
                  before_capture=None, logout_runner=logout, archive=None, probe_runner=probe,
-                 inventory_runner=inventory):
+                 inventory_runner=inventory, ticket_runner=None):
         self.private = private
         self.runner = runner
         self.logout_runner = logout_runner
         self.probe_runner = probe_runner
         self.inventory_runner = inventory_runner
+        self.ticket_runner = ticket_purchase if ticket_runner is None else ticket_runner
         self.archive = archive
         self.cooldown = cooldown
         self.on_result = on_result
@@ -444,6 +547,21 @@ class QRSync:
                     return True
                 try:
                     worker = threading.Thread(target=self._cleanup_work, args=(user, send), daemon=True, name='qr-cleanup')
+                    worker.start()
+                except Exception:
+                    self.gate.release()
+                    raise
+                return True
+            if text.startswith('/购券'):
+                match = re.fullmatch(r'/购券\s+([23])', text)
+                if not match:
+                    send(int(user), '私聊用法：/购券 2 或 /购券 3。此操作只购买并保留券，不打歌、不消耗券；到账以库存读回为准。')
+                    return True
+                if not self.gate.acquire(blocking=False):
+                    send(int(user), '当前有游戏会话操作正在进行，请稍后再试。')
+                    return True
+                try:
+                    worker = threading.Thread(target=self._ticket_work, args=(user, int(match[1]), send), daemon=True, name='qr-ticket')
                     worker.start()
                 except Exception:
                     self.gate.release()
@@ -530,6 +648,25 @@ class QRSync:
             self.gate.release()
 
     @serialized_worker
+    def _ticket_work(self, user, charge_id, send):
+        try:
+            record = session_record(user, self.private)
+            if record is None or record.get('state') != 'active':
+                send(int(user), '没有可用的保留会话；本次未购券。')
+                return
+            try:
+                prepare_ticket_plan(user, charge_id, self.private)
+            except FileNotFoundError:
+                send(int(user), '机台测试配置尚未准备好，本次未发送购券或结算请求。')
+                return
+            result = self.ticket_runner(user, charge_id, private=self.private)
+            send(int(user), format_ticket_result(result, charge_id))
+        except Exception:
+            send(int(user), '购券结果未确认，请先 /查券 或在机台核对；不要重复购买。')
+        finally:
+            self.gate.release()
+
+    @serialized_worker
     def _inventory_work(self, user, send):
         try:
             record = session_record(user, self.private)
@@ -579,31 +716,46 @@ class QRSync:
         finally:
             self.gate.release()
 
-    @serialized_worker
     def _work(self, user, qr, send, context=None, retain=True):
         try:
-            result = self.runner(user, qr, private=self.private, **({'retain':True} if retain else {}))
-            if result.requester != user:
-                raise CaptureError('capture_owner_mismatch')
-            result.upload_context = context
-            if result.summary.get('login') == 'not_started':
-                send(int(user), '二维码验证失败：可能为空码、已过期或验证服务异常；未进入游戏登录，无需 /logout，请重新获取二维码。')
-                return
-            label = {'complete': '完成', 'partial': '部分完成', 'failed': '失败'}[result.summary['status']]
-            logout = '登出接口已接受，游戏侧会话释放尚未核验' if result.summary['logout'] == 'confirmed' else '登出未确认，请检查游戏会话状态'
-            if retain:
-                logout = '会话已保留；登录成功 60 秒后可 /logout，14 分钟后自动尝试登出' if result.summary.get('session') == 'active' else '会话状态未确认，请检查游戏状态；新登录已阻止'
-            elif result.summary.get('session') == 'active':
-                logout = '登出未确认，会话记录已保留，可使用 /logout 重试；新登录已阻止'
-            send(int(user), f'取分{label}：{len(result.scores)} 条成绩；{logout}。')
-            if self.on_result is not None and result.summary['status'] == 'complete':
+            with session_lock(self.private):
+                # Repeat mutable preflight checks after acquiring the process lock.
+                if not self._consent(user):
+                    send(int(user), CONSENT)
+                    return
+                if session_exists(user, self.private):
+                    send(int(user), '已有保留或状态未确认的会话，请先 /logout；新二维码未使用。')
+                    return
                 try:
-                    self.on_result(result, send)
+                    registered = register_qr_attempt(qr, self.private)
                 except Exception:
-                    send(int(user), '取分结果已保存，但后续上传未完成。')
+                    send(int(user), '二维码尝试记录暂不可用，未提交取分；请联系管理员。')
+                    return
+                if not registered:
+                    send(int(user), '此二维码已被本机器人尝试过，不会再次提交（包括失败或超时）；这不代表官方已消费。请从公众号重新获取新码，并在显示的有效期内使用。')
+                    return
+                result = self.runner(user, qr, private=self.private, **({'retain':True} if retain else {}))
+                if result.requester != user:
+                    raise CaptureError('capture_owner_mismatch')
+                result.upload_context = context
+                if result.summary.get('login') == 'not_started':
+                    send(int(user), '二维码验证失败：可能为空码、已过期、已使用或验证服务异常；未进入游戏登录，无需 /logout。请从公众号重新获取新码，并在显示的有效期内使用；本地尝试不代表官方已消费。')
+                    return
+                label = {'complete': '完成', 'partial': '部分完成', 'failed': '失败'}[result.summary['status']]
+                logout = '登出接口已接受，游戏侧会话释放尚未核验' if result.summary['logout'] == 'confirmed' else '登出未确认，请检查游戏会话状态'
+                if retain:
+                    logout = '会话已保留；登录成功 60 秒后可 /logout，14 分钟后自动尝试登出' if result.summary.get('session') == 'active' else '会话状态未确认，请检查游戏状态；新登录已阻止'
+                elif result.summary.get('session') == 'active':
+                    logout = '登出未确认，会话记录已保留，可使用 /logout 重试；新登录已阻止'
+                send(int(user), f'取分{label}：{len(result.scores)} 条成绩；{logout}。取分登录后，上机前请从公众号重新获取新码。')
+                if self.on_result is not None and result.summary['status'] == 'complete':
+                    try:
+                        self.on_result(result, send)
+                    except Exception:
+                        send(int(user), '取分结果已保存，但后续上传未完成。')
         except Exception:
             try:
-                send(int(user), '取分失败或超时；登出状态未确认，请检查游戏会话状态后重试。')
+                send(int(user), '取分失败或超时；登出状态未确认，请检查游戏会话状态。此码不会再次提交，本地尝试不代表官方已消费；需要再次取分时，请从公众号重新获取新码并在显示的有效期内使用。')
             except Exception:
                 pass
         finally:

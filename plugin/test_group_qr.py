@@ -7,9 +7,9 @@ QR = 'SGWCMAID' + 'X' * 12 + 'A' * 64
 
 class GroupQRTests(unittest.TestCase):
     def setUp(self):
-        groups = patch.object(main, "ALLOWED_GROUP_IDS", frozenset({123456789}))
+        groups = patch.object(main, "ALLOWED_GROUP_IDS", frozenset({135990003}))
         groups.start(); self.addCleanup(groups.stop)
-        self.event = dict(post_type='message', message_type='group', group_id=123456789,
+        self.event = dict(post_type='message', message_type='group', group_id=135990003,
                           user_id=12345678, self_id=87654321, message_id=10,
                           raw_message='/login ' + QR,
                           message=[{'type':'text','data':{'text':'/login '+QR}}])
@@ -65,11 +65,11 @@ class GroupQRTests(unittest.TestCase):
         self.handler.assert_called_once()
         self.assertEqual(self.calls, [])
 
-    def test_no_admin_only_hint(self):
+    def test_no_admin_warns_and_processes_verified_message(self):
         self.role = 'member'
         main.handle(self.event)
-        self.assertEqual(self.calls,['get_group_member_info'])
-        self.handler.assert_not_called()
+        self.assertEqual(self.calls,['get_group_member_info','get_msg'])
+        self.handler.assert_called_once()
         self.assertIn('没有群管理员权限',self.sender.call_args.args[1])
 
     def test_public_help_without_permission_or_credentials(self):
@@ -88,10 +88,11 @@ class GroupQRTests(unittest.TestCase):
         self.assertEqual(self.calls,[])
         self.handler.assert_not_called()
 
-    def test_delete_failure_blocks_and_redacts(self):
+    def test_delete_failure_warns_processes_and_redacts(self):
         self.fail_delete = True
         main.handle(self.event)
-        self.handler.assert_not_called()
+        self.handler.assert_called_once()
+        self.assertIn('撤回失败', self.sender.call_args.args[1])
         self.assertNotIn(QR,repr(self.sender.call_args_list))
 
     def test_group_controls_without_private_send(self):
@@ -122,7 +123,7 @@ class GroupQRTests(unittest.TestCase):
         self.handler.assert_not_called()
         self.assertNotIn('synthetic-secret',repr(self.sender.call_args_list))
 
-    def test_failed_recall_never_binds(self):
+    def test_failed_recall_warns_but_binds(self):
         text = '/绑定落雪 synthetic-secret'
         self.event['raw_message'] = text
         self.event['message'] = [{'type':'text','data':{'text':text}}]
@@ -130,7 +131,7 @@ class GroupQRTests(unittest.TestCase):
         self.fail_delete = True
         with patch('site_bindings.handle') as binding:
             main.handle(self.event)
-            binding.assert_not_called()
+            binding.assert_called_once()
         self.assertNotIn('synthetic-secret',repr(self.sender.call_args_list))
 
     def test_mismatched_original_blocks_delete(self):

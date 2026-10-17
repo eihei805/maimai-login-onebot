@@ -96,7 +96,7 @@ def _group_qr_hint(group_id: int, text: str = '机器人没有群管理员权限
         pass
 
 def _group_qr_capture(event: dict[str, Any], qr: str = '') -> bool:
-    """Recall a verified group message before handing its QR to private flow."""
+    """Verify group input; recall when possible, otherwise warn and continue."""
     from qr_sync import DEFAULT_SYNC, event_text
     group_id = int(event.get('group_id') or 0)
     message_id = int(event.get('message_id') or 0)
@@ -110,9 +110,6 @@ def _group_qr_capture(event: dict[str, Any], qr: str = '') -> bool:
         member = onebot_api('get_group_member_info',
                             {'group_id': group_id, 'user_id': self_id}, timeout=10)
         role = member.get('role') if isinstance(member, dict) else None
-        if role not in ('admin', 'owner'):
-            _group_qr_hint(group_id, '机器人没有群管理员权限，未处理；' + recovery)
-            return True
         original = onebot_api('get_msg', {'message_id': message_id}, timeout=10)
         if not isinstance(original, dict) or int(original.get('group_id') or 0) != group_id \
                 or int(original.get('message_id') or 0) != message_id \
@@ -121,10 +118,18 @@ def _group_qr_capture(event: dict[str, Any], qr: str = '') -> bool:
                 or _group_qr_text(original) != qr:
             _group_qr_hint(group_id, '未能核验原始消息，未处理；' + recovery)
             return True
-        onebot_api('delete_msg', {'message_id': message_id}, timeout=10)
     except Exception:
-        _group_qr_hint(group_id, '机器人未能确认并撤回消息，未处理；' + recovery)
+        _group_qr_hint(group_id, '机器人未能核验原始消息，未处理；' + recovery)
         return True
+    recalled = False
+    if role in ('admin', 'owner'):
+        try:
+            onebot_api('delete_msg', {'message_id': message_id}, timeout=10)
+            recalled = True
+        except Exception:
+            pass
+    if not recalled:
+        _group_qr_hint(group_id, '消息将继续处理，但机器人没有群管理员权限或撤回失败，凭据仍公开可见；建议手动撤回，以后私聊发送。处理完成后，' + recovery)
     text = event_text(event)
     if qr and not text.startswith(('/login ', '/绑定账号 ', '/取分 ')):
         text = '/login ' + qr
@@ -133,15 +138,16 @@ def _group_qr_capture(event: dict[str, Any], qr: str = '') -> bool:
     def report(_user: int, text: str) -> None:
         suffix = ''
         if text.startswith(('取分完成', '取分部分完成', '取分失败')):
-            suffix = ' 没有其他需求时请轮换二维码。'
+            suffix = ' 请在公众号显示的有效期内使用新码。'
         if '会话已保留' in text:
-            suffix = ' 请使用 /logout 登出；没有其他需求时再轮换二维码。'
+            suffix = ' 登录成功 60 秒后可 /logout；上机前请轮换二维码，从公众号重新获取新码。'
         text = text.replace('私聊发送', '发送').replace('请私聊', '请在群内').replace('可私聊', '可在群内')
         _group_qr_hint(group_id, text + suffix)
     from site_bindings import handle as handle_bindings
     if not handle_bindings(synthetic, report):
         DEFAULT_SYNC.handle(synthetic, report)
     return True
+
 
 def upload_catalogs(result) -> tuple[list[dict], list[dict]]:
     """Read only the public raw caches; never refresh or discover tokens here."""
@@ -213,16 +219,17 @@ def handle(event: dict[str, Any]) -> None:
                  '• /logout：登录成功 60 秒后可退出自己的游戏会话\n'
                  '• /清理会话：归档可确认失效的记录（登录未成功或游戏侧已失效；不会冒充已登出）\n'
                  '• /取分 二维码文本：取分并保留会话，14 分钟后自动尝试登出\n'
+                 '• /购券 2 或 /购券 3：只购买并保留券，不打歌、不消耗券\n'
                  '• /查券：使用保留会话查询券库存（游戏侧观测值，不代表付款或到账）\n\n'
                  '【成绩同步】\n'
                  '• /token：查看水鱼、落雪 Token 获取方式\n'
-                 '• /绑定水鱼 TOKEN 或 /绑定落雪 TOKEN：私聊直接绑定，群聊撤回成功后绑定\n'
+                 '• /绑定水鱼 TOKEN 或 /绑定落雪 TOKEN：私聊直接绑定，白名单群核验后绑定\n'
                  '• /解绑水鱼 或 /解绑落雪：移除绑定\n'
                  '• /上传状态：查看自己的绑定状态\n\n'
                  '绑定后，完整取分会自动上传到已绑定的站点。\n\n'
                  '【群聊取分】\n'
-                 '私聊直接处理；白名单群中，机器人有管理权限且成功撤回敏感消息后才处理；'
-                 '没有权限或撤回失败只提醒，不取分或绑定。\n\n'
+                 '私聊直接处理；白名单群核验原始消息后处理；能撤回时尝试撤回；'
+                 '没有管理权限或撤回失败时提示公开风险后继续。\n\n'
                  '【首次使用】\n'
                  '发送 /同意HTTP取分；二维码接口为明文 HTTP，请确认风险。\n'
                  '二维码公开后请及时轮换。')
@@ -245,7 +252,7 @@ def handle(event: dict[str, Any]) -> None:
     if token_help:
         _group_qr_hint(int(event['group_id']), TOKEN_HELP.replace('私聊绑定', '群内绑定（须成功撤回）'))
         return
-    if text in ('/logout', '/清理会话', '/同意HTTP取分', '/撤销HTTP取分', '/上传状态', '/解绑水鱼', '/解绑落雪', '/查券'):
+    if text in ('/logout', '/清理会话', '/同意HTTP取分', '/撤销HTTP取分', '/上传状态', '/解绑水鱼', '/解绑落雪', '/查券') or text.startswith('/购券'):
         synthetic = dict(event, message_type='private')
         def report(_user: int, result: str) -> None:
             _group_qr_hint(int(event['group_id']), result.replace('私聊', '群内'))
