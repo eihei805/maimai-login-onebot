@@ -720,6 +720,7 @@ class QRSync:
             if record is None or record.get('state') != 'active':
                 send(int(user), '没有可用的保留会话；请先 /login，本次未上传。')
                 return
+            send(int(user), '正在收集账号数据并核对上传条件，最长约 3 分半钟；请勿重复提交。')
             result = typed_upload(user, operation, private=self.private)
             status = result['status']
             label = '物品' if operation['operation'] == 'item' else '成绩'

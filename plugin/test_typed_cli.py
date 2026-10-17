@@ -35,3 +35,11 @@ class TypedCLITests(unittest.TestCase):
         self.operation['kind']=999
         with self.assertRaises(ValueError): self.run_typed()
         self.unchanged()
+
+    def test_profile_provenance_is_metadata_only(self):
+        p = self.private / 'ticket-machine-profile.json'
+        data = json.loads(p.read_text())
+        data['provenance'] = {'source': 'explicit simulation'}
+        p.write_text(json.dumps(data))
+        self.assertEqual(self.run_typed()[0], 0)
+        self.unchanged()

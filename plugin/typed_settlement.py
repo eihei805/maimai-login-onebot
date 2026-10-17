@@ -88,8 +88,8 @@ def build_typed_settlement(snapshot, machine, *, user_id, login_id, login_date_t
     10000 units per percent, e.g. 1010000 = 101%. All other best fields and counts
     are preserved for scores; new chart fields explicitly start at zero. Score
     operations do not depend on song 8 or rating compatibility. Cosmetic changes
-    explicitly use the established song-8 all-miss builder, increment play counts,
-    and require its complete machine/catalog inputs; no tickets are consumed.
+    use only item deltas, preserve play counts and emit no gameplay logs;
+    no tickets are consumed.
     auth time is validated but not written into a score operation's profile.
     """
     for value in (user_id, login_id, login_date_time):

@@ -602,7 +602,9 @@ def _main():
         from upload_commands import validate_operation
         operation = validate_operation(operation)
         profile = m.object_json(private_read(PRIVATE / 'ticket-machine-profile.json', 65536))
-        if set(profile) != {'machine', 'extend_flags'}:
+        if (type(profile) is not dict or not {'machine', 'extend_flags'} <= set(profile)
+                or set(profile) - {'machine', 'extend_flags', 'provenance'}
+                or type(profile['machine']) is not dict or type(profile['extend_flags']) is not dict):
             raise SafeFailure('typed_upload_profile_rejected')
         from settlement_collect import collect_snapshot
         from typed_settlement import submit_typed
