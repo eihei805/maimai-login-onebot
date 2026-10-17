@@ -118,6 +118,13 @@ class TicketTests(unittest.TestCase):
                 self.assertEqual(self.call()['status'], 'ambiguous')
                 self.assertEqual(self.writes(), ['UpsertUserChargelogApi'])
 
+    def test_failure_diagnostics_preserve_code_not_exception_text(self):
+        self.client.buy_code = 0
+        out = self.call()
+        self.assertEqual(out['diagnostics']['UpsertUserChargelogApi'],
+                         dict(outcome='response_rejected', return_code=0))
+        self.assertEqual(self.writes(), ['UpsertUserChargelogApi'])
+
     def test_purchase_mismatch_stops_before_settlement(self):
         self.client.bad_buy_read = True
         self.assertEqual(self.call()['status'], 'acknowledged_unverified')

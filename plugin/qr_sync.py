@@ -783,6 +783,21 @@ class QRSync:
                 send(int(user), '机台测试配置尚未准备好，本次未发送购券或结算请求。')
                 return
             result = self.ticket_runner(user, charge_id, private=self.private)
+            # Fixed, non-account diagnostic fields only; no raw stdout/stderr.
+            diag = result.get('diagnostics', {}).get('UpsertUserChargelogApi', {})
+            outcome = diag.get('outcome')
+            if outcome in ('accepted', 'response_rejected', 'exception'):
+                event = {'event': 'ticket_purchase_diagnostic', 'outcome': outcome}
+                code = diag.get('return_code')
+                if type(code) is int:
+                    event['return_code'] = code
+                category = diag.get('category')
+                if category in ('network_or_tls_failure', 'http_status_rejected',
+                                'response_size_limit', 'total_timeout', 'destination_rejected',
+                                'identity_unavailable', 'ticket_purchase_not_authorized_or_already_attempted',
+                                'protocol_failure', 'local_failure'):
+                    event['category'] = category
+                print(json.dumps(event), file=sys.stderr, flush=True)
             send(int(user), format_ticket_result(result, charge_id))
         except Exception:
             send(int(user), '购券结果未确认，请先 /查券 或在机台核对；不要重复购买。')

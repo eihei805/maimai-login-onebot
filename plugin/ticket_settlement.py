@@ -238,15 +238,30 @@ def submit_ticket(client, session, *, owner, private, snapshot, machine, build_a
     except Exception:
         return dict(status='rejected', reason='pre_send_validation_failed', retry_allowed=False)
 
+    diagnostics = {}
+
     def send(api, body):
         try:
             current()
             reply = client._game(api, deepcopy(body), binding[3])
             current()
-            return (type(reply) is dict and type(reply.get('returnCode')) is int and
-                    reply['returnCode'] == 1 and ('userId' not in reply or
-                    type(reply['userId']) is int and reply['userId'] == binding[0]))
-        except Exception:
+            valid = (type(reply) is dict and type(reply.get('returnCode')) is int and
+                     reply['returnCode'] == 1 and ('userId' not in reply or
+                     type(reply['userId']) is int and reply['userId'] == binding[0]))
+            diagnostics[api] = dict(outcome='accepted' if valid else 'response_rejected')
+            if type(reply) is dict and type(reply.get('returnCode')) is int:
+                diagnostics[api]['return_code'] = reply['returnCode']
+            return valid
+        except Exception as exc:
+            # Fixed categories only: never retain exception messages or payloads.
+            adapter = getattr(client, 'transport', None)
+            error = getattr(adapter, 'last_error', None)
+            allowed = {'network_or_tls_failure', 'http_status_rejected',
+                       'response_size_limit', 'total_timeout', 'destination_rejected',
+                       'identity_unavailable', 'ticket_purchase_not_authorized_or_already_attempted'}
+            diagnostics[api] = dict(outcome='exception',
+                category=error if error in allowed else
+                ('protocol_failure' if type(exc).__name__ == 'ProtocolError' else 'local_failure'))
             return False
 
     acknowledged = send('UpsertUserChargelogApi', purchase)
@@ -256,7 +271,8 @@ def submit_ticket(client, session, *, owner, private, snapshot, machine, build_a
     except Exception:
         pass
     result = dict(status='ambiguous', stage='purchase', purchase_acknowledged=acknowledged,
-                  checks=dict(purchase_inventory=bought), retry_allowed=False, payment='not_attested')
+                  checks=dict(purchase_inventory=bought), retry_allowed=False, payment='not_attested',
+                  diagnostics=diagnostics)
     if not acknowledged:
         return result
     result['status'] = 'acknowledged_unverified'
