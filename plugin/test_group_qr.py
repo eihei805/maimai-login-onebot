@@ -7,6 +7,8 @@ QR = 'SGWCMAID' + 'X' * 12 + 'A' * 64
 
 class GroupQRTests(unittest.TestCase):
     def setUp(self):
+        groups = patch.object(main, "ALLOWED_GROUP_IDS", frozenset({123456789}))
+        groups.start(); self.addCleanup(groups.stop)
         self.event = dict(post_type='message', message_type='group', group_id=123456789,
                           user_id=12345678, self_id=87654321, message_id=10,
                           raw_message='/login ' + QR,

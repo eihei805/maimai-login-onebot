@@ -48,7 +48,7 @@ class CaptureResult:
 
 def sensitive_text(text: str) -> bool:
     # Broad guard, including malformed QR and secret-bearing commands.
-    return 'SGWCMAID' in text.upper() or text.lower().startswith(('/login', '/logout', '/清理会话')) or text.startswith(('/取分', '/同意HTTP取分', '/撤销HTTP取分', '/绑定', '/解绑', '/上传'))
+    return 'SGWCMAID' in text.upper() or text.lower().startswith(('/login', '/logout', '/清理会话')) or text.startswith(('/取分', '/同意HTTP取分', '/撤销HTTP取分', '/绑定', '/解绑', '/上传', '/查券'))
 
 
 def event_text(event: dict) -> str:
@@ -273,6 +273,69 @@ def probe(user, *, private=PRIVATE, client=CLIENT, timeout=75):
     return {0: 'alive', 4: 'dead'}.get(completed.returncode, 'indeterminate')
 
 
+def inventory(user, *, private=PRIVATE, client=CLIENT, timeout=75):
+    """Read-only ticket inventory for a retained session: one GetUserChargeApi.
+
+    Returns observed rows (chargeId/stock/purchaseDate/validDate). It never
+    logs in, logs out, writes stock or refreshes the session record, so the
+    60/840-second logout policy is unaffected. Observed stock is not an
+    entitlement, payment or order proof.
+    """
+    private_directory(private)
+    record = session_record(user, private)
+    if record is None or record.get('owner') != user or record.get('version') != 1 or record.get('state') != 'active':
+        raise CaptureError('inventory_unavailable')
+    completed = subprocess.run([sys.executable, str(client), '--ticket-inventory', '--session-owner', user],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        timeout=timeout, check=False, shell=False, **locked_subprocess_args())
+    if completed.returncode != 0:
+        raise CaptureError('inventory_unavailable')
+    try:
+        payload = json.loads(completed.stdout.decode('utf-8'))
+    except (UnicodeError, ValueError):
+        raise CaptureError('inventory_unavailable') from None
+    tickets = payload.get('tickets') if isinstance(payload, dict) and payload.get('status') == 'ok' else None
+    if not isinstance(tickets, list) or len(tickets) > 4096:
+        raise CaptureError('inventory_unavailable')
+    rows, seen = [], set()
+    nonneg = lambda v: type(v) is int and 0 <= v <= 2**64 - 1
+    for row in tickets:
+        if (not isinstance(row, dict) or not nonneg(row.get('chargeId')) or not row['chargeId']
+                or not nonneg(row.get('stock')) or row['chargeId'] in seen):
+            raise CaptureError('inventory_unavailable')
+        for key in ('purchaseDate', 'validDate'):
+            value = row.get(key)
+            if not isinstance(value, str) or len(value) > 64 or any(ord(c) < 32 for c in value):
+                raise CaptureError('inventory_unavailable')
+        seen.add(row['chargeId'])
+        rows.append({key: row[key] for key in ('chargeId', 'stock', 'purchaseDate', 'validDate')})
+    return rows
+
+
+# Fixed display labels for known paid tickets. Unknown IDs stay as raw IDs;
+# the multiplier is never guessed from an unrecognised chargeId.
+TICKET_LABELS = {2: '2 倍券', 3: '3 倍券', 4: '4 倍券', 5: '5 倍券', 6: '6 倍券'}
+INVENTORY_HEADER = '券库存（游戏侧观测值，不代表已付款、到账或可用权益）：'
+
+
+def format_inventory(rows):
+    """Fixed-format summary. Never signals payment or entitlement."""
+    if not rows:
+        return INVENTORY_HEADER + '\n未观测到任何券记录（列表为空）。\n如刚购买，请稍后在机台或重新 /查券 确认。'
+    lines = [INVENTORY_HEADER]
+    for row in sorted(rows, key=lambda r: (r['stock'] <= 0, r['chargeId'])):
+        label = TICKET_LABELS.get(row['chargeId'], 'chargeId %d' % row['chargeId'])
+        line = '· %s：%d 张' % (label, row['stock'])
+        if row['purchaseDate']:
+            line += '，购买 %s' % row['purchaseDate']
+        if row['validDate']:
+            line += '，有效期至 %s' % row['validDate']
+        lines.append(line)
+    lines.append('共 %d 条记录，stock 合计 %d。' % (len(rows), sum(r['stock'] for r in rows)))
+    lines.append('日期为游戏返回的原样文本；未推断时区或可用性。')
+    return '\n'.join(lines)
+
+
 def reap_expired(user, *, private=PRIVATE, archive=None, now=None):
     """Archive an `active` record only after the caller proved it is dead.
 
@@ -311,11 +374,13 @@ def logout(user, *, private=PRIVATE, client=CLIENT, timeout=75):
 
 class QRSync:
     def __init__(self, private: Path = PRIVATE, *, runner=capture, cooldown=60, on_result=None,
-                 before_capture=None, logout_runner=logout, archive=None, probe_runner=probe):
+                 before_capture=None, logout_runner=logout, archive=None, probe_runner=probe,
+                 inventory_runner=inventory):
         self.private = private
         self.runner = runner
         self.logout_runner = logout_runner
         self.probe_runner = probe_runner
+        self.inventory_runner = inventory_runner
         self.archive = archive
         self.cooldown = cooldown
         self.on_result = on_result
@@ -379,6 +444,18 @@ class QRSync:
                     return True
                 try:
                     worker = threading.Thread(target=self._cleanup_work, args=(user, send), daemon=True, name='qr-cleanup')
+                    worker.start()
+                except Exception:
+                    self.gate.release()
+                    raise
+                return True
+            if text == '/查券':
+                # Read-only inventory read against the retained session.
+                if not self.gate.acquire(blocking=False):
+                    send(int(user), '取分或登出正在进行，请稍后重试。')
+                    return True
+                try:
+                    worker = threading.Thread(target=self._inventory_work, args=(user, send), daemon=True, name='qr-inventory')
                     worker.start()
                 except Exception:
                     self.gate.release()
@@ -449,6 +526,23 @@ class QRSync:
             send(int(user), '登出接口已接受；游戏侧会话释放尚未核验，如仍提示占用，请等待游戏侧解除后再登录。')
         except Exception:
             send(int(user), '登出未确认，会话记录保留；请检查游戏状态后重试 /logout。')
+        finally:
+            self.gate.release()
+
+    @serialized_worker
+    def _inventory_work(self, user, send):
+        try:
+            record = session_record(user, self.private)
+            if record is None:
+                send(int(user), '没有本机器人保留的会话；请先发送 /login 二维码文本。')
+                return
+            if record.get('state') != 'active':
+                send(int(user), '当前会话记录不是可用登录态，无法查询；请检查游戏状态或 /清理会话。')
+                return
+            rows = self.inventory_runner(user, private=self.private)
+            send(int(user), format_inventory(rows))
+        except Exception:
+            send(int(user), '暂时无法查询券库存，请稍后重试；未做任何修改。')
         finally:
             self.gate.release()
 

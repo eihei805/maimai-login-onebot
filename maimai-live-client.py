@@ -130,7 +130,7 @@ class Transport:
                 self._qr_used = True
                 valid = req.url == self.config.qr_url
             else:
-                valid = req.stage in ('UserLoginApi', 'GetUserMusicApi', 'GetUserDataApi', 'UserLogoutApi') and req.url.startswith(self.config.game_base) and bool(re.fullmatch('[0-9a-f]{32}', req.url[len(self.config.game_base):]))
+                valid = req.stage in ('UserLoginApi', 'GetUserMusicApi', 'GetUserDataApi', 'UserLogoutApi', 'GetUserChargeApi') and req.url.startswith(self.config.game_base) and bool(re.fullmatch('[0-9a-f]{32}', req.url[len(self.config.game_base):]))
             scheme = urllib.parse.urlsplit(req.url).scheme
             allowed_scheme = scheme == 'https' or (req.stage == 'QRLookup' and self.allow_http_qr and scheme == 'http')
             if not valid or not allowed_scheme:
@@ -160,7 +160,7 @@ class Transport:
                     raise SafeFailure('response_size_limit')
                 if req.stage != 'QRLookup':
                     self.cookies.extract_cookies(response, request)
-            print(json.dumps({'response_metadata': {'stage': req.stage, 'wire_bytes': len(body)}}))
+            print(json.dumps({'response_metadata': {'stage': req.stage, 'wire_bytes': len(body)}}), file=sys.stderr)
             if req.stage == 'QRLookup':
                 try:
                     lookup = m.object_json(body)
@@ -316,7 +316,7 @@ def _logout_owned(owner, client, transport):
 
 def self_test():
     c = m.Config('https://example.invalid/qr', 'https://example.invalid/game/',
-        'A63E01ABCDE', 'GAMEID', b'Q'*32, b'fixture', bytes(range(32)), bytes(range(16)),
+        'A63E01ABCDE', 'MAID', b'Q'*32, b'fixture', bytes(range(32)), bytes(range(16)),
         'test', 'application/json', {'Content-Type':'application/json'})
     codec = m.Codec(c.aes_key, c.aes_iv)
     seen = []
@@ -392,6 +392,7 @@ def _main():
     mode.add_argument('--live', action='store_true')
     mode.add_argument('--logout-session', action='store_true')
     mode.add_argument('--probe-session', action='store_true')
+    mode.add_argument('--ticket-inventory', action='store_true')
     qr = parser.add_mutually_exclusive_group()
     qr.add_argument('--qr-file', type=Path)
     qr.add_argument('--qr-stdin', action='store_true')
@@ -406,7 +407,7 @@ def _main():
         self_test()
         return 0
     c, raw = load_config()
-    blocked = blockers(c, raw, args.allow_http_qr or args.logout_session or args.probe_session)
+    blocked = blockers(c, raw, args.allow_http_qr or args.logout_session or args.probe_session or args.ticket_inventory)
     if args.check or blocked:
         print(json.dumps({'status':'blocked' if blocked else 'ready', 'blockers':blocked, 'requests_live':0}))
         return 2 if blocked else 0
@@ -452,6 +453,31 @@ def _main():
             print(json.dumps({'status':'indeterminate', 'probe':'unknown'}))
             return 5
         print(json.dumps({'status':'alive', 'probe':'ok'}))
+        return 0
+    if args.ticket_inventory:
+        if not args.session_owner or args.qr_file or args.qr_stdin or args.logout:
+            raise SafeFailure('ticket_inputs_rejected')
+        # Read-only inventory: one GetUserChargeApi against the retained session.
+        # No login, no logout, no write, no clock refresh, no record update.
+        transport = Transport(c, total=60)
+        try:
+            client = m.Client(c, transport)
+            session = restore_session(args.session_owner, client, transport)
+            rows = client.ticket_inventory(session)
+        except SafeFailure as exc:
+            print(json.dumps({'status':'indeterminate', 'reason':str(exc)}))
+            return 5
+        except m.ProtocolError:
+            # Client wraps transport exceptions; retain the adapter's safe reason.
+            if transport.last_error:
+                print(json.dumps({'status':'indeterminate', 'reason':transport.last_error}))
+                return 5
+            print(json.dumps({'status':'failed', 'reason':'inventory_protocol_error'}))
+            return 3
+        except Exception:
+            print(json.dumps({'status':'indeterminate', 'reason':'unknown'}))
+            return 5
+        print(json.dumps({'status':'ok', 'tickets':[dict(row) for row in rows]}, ensure_ascii=False))
         return 0
     if not args.live or not (args.qr_file or args.qr_stdin) or not 1 <= args.page_budget <= 512 or (args.session_owner and not args.qr_stdin):
         raise SafeFailure('live_inputs_required')

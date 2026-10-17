@@ -25,6 +25,43 @@ def integer(value, minimum=0):
     return type(value) is int and minimum <= value <= 2**64 - 1
 
 
+def parse_ticket_inventory(reply, expected_user_id):
+    """Validate a synthetic/direct GetUserChargeApi envelope; never send or write.
+
+    Missing lists are unknown, not empty. Null is accepted only with length=0.
+    Stock is reported as observed; expiry and entitlement are not inferred.
+    """
+    require(integer(expected_user_id, 1), 'Invalid inventory identity')
+    require(type(reply) is dict and type(reply.get('userId')) is int and
+            reply['userId'] == expected_user_id, 'Invalid inventory envelope')
+    if 'returnCode' in reply:
+        require(type(reply['returnCode']) is int and reply['returnCode'] == 1,
+                'Inventory returnCode rejected')
+    require(integer(reply.get('length')) and 'userChargeList' in reply,
+            'Missing inventory list or length')
+    rows = reply['userChargeList']
+    if rows is None:
+        require(reply['length'] == 0, 'Null inventory length mismatch')
+        rows = []
+    require(type(rows) is list and len(rows) <= 4096 and reply['length'] == len(rows),
+            'Invalid inventory list length')
+    result, seen = [], set()
+    for row in rows:
+        require(type(row) is dict and integer(row.get('chargeId'), 1) and
+                integer(row.get('stock')), 'Invalid inventory row')
+        require(row['chargeId'] not in seen, 'Duplicate inventory chargeId')
+        seen.add(row['chargeId'])
+        for key in ('purchaseDate', 'validDate'):
+            require(type(row.get(key)) is str and len(row[key]) <= 64 and
+                    not any(ord(c) < 32 for c in row[key]), 'Invalid inventory date')
+        item = {key: row[key] for key in ('chargeId', 'stock', 'purchaseDate', 'validDate')}
+        if 'extNum1' in row:
+            require(integer(row['extNum1']), 'Invalid inventory extension')
+            item['extNum1'] = row['extNum1']
+        result.append(item)
+    return tuple(result)
+
+
 def json_bytes(obj):
     return json.dumps(obj, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
 
@@ -318,6 +355,14 @@ class Client:
             except ProtocolError as exc:
                 return Scores(False, rows, str(exc), pages, cursor)
         return Scores(False, rows, 'page_budget', pages, cursor)
+
+    def ticket_inventory(self, session):
+        # Read-only inventory observation: one GetUserChargeApi, nothing written,
+        # no login/logout, no clock refresh, no session extension.
+        self._current(session)
+        reply = self._game('GetUserChargeApi', {'userId': session.user_id},
+                           session.user_agent_identity)
+        return parse_ticket_inventory(reply, session.user_id)
 
     def run(self, qr, inputs, page_budget=512):
         session = self.login(qr, inputs)

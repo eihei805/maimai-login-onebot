@@ -52,6 +52,7 @@ SYNC = {0: '', 5: 'sync'}
 
 FAILURE_LABELS = {
     'credential_or_permission_denied': '令牌或权限被拒绝',
+    'lxns_player_not_found': '落雪账号未找到舞萌玩家档案，请先在落雪网站绑定或导入玩家',
     'read_failed': '读取接口网络失败',
     'transport_failed_outcome_unknown': '上传网络失败，结果未确认',
     'rate_limited_no_retry': '接口限流',
@@ -219,6 +220,8 @@ def _call(transport, method, url, headers, body=None):
         status, response_headers, raw = transport(method, url, headers, body)
     except Exception:
         raise UploadError('transport_failed_outcome_unknown' if method == 'POST' else 'read_failed') from None
+    if status == 404 and method == 'GET' and url == LXNS+'user/maimai/player':
+        raise UploadError('lxns_player_not_found')
     if status == 429: raise UploadError('rate_limited_no_retry')
     if status in (401, 403): raise UploadError('credential_or_permission_denied')
     if type(status) is not int or not 200 <= status < 300:

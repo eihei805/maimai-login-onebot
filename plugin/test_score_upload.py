@@ -23,6 +23,19 @@ class Fake:
 def lx(data): return (200, {'success': True, 'code': 200, 'data': data})
 
 class Diagnostics(unittest.TestCase):
+    def test_personal_player_404_is_specific(self):
+        transport = Fake([(404, {})])
+        with self.assertLogs('score_upload', level='WARNING'):
+            result = u.upload_scores([ROW], FISH, LXNS,
+                u.Credentials(lxns_personal_token='synthetic-personal'),
+                complete=True, transport=transport)
+        self.assertEqual(result['lxns']['reason'], 'lxns_player_not_found')
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_scores_404_remains_http_failure(self):
+        with self.assertRaisesRegex(u.UploadError, 'http_failure_unconfirmed'):
+            u._call(Fake([(404, {})]), 'GET', u.LXNS+'user/maimai/player/scores', {})
+
     def test_safe_read_failure_log(self):
         transport = Fake([RuntimeError('SECRET upstream response')])
         with self.assertLogs('score_upload', level='WARNING') as logs:
