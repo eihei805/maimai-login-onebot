@@ -477,6 +477,23 @@ def format_ticket_result(result, charge_id):
     return '购券结果不确定，可能已经写入；请先 /查券 或在机台核对，不要重复购买。'
 
 
+def game_score_upload(user, *, private=PRIVATE, client=CLIENT, timeout=210):
+    session_file(user, private)
+    document = private / ('game-score-' + user + '.json')
+    read_private(document, 8*1024*1024)
+    result = subprocess.run([sys.executable, str(client), '--upload-game-scores',
+        '--session-owner', user, '--score-document', str(document)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        timeout=timeout, check=False, shell=False, **locked_subprocess_args())
+    if len(result.stdout) > 65536:
+        raise CaptureError('game_score_response_size')
+    data = json.loads(result.stdout)
+    if type(data) is not dict or data.get('status') not in (
+            'verified', 'rejected', 'ambiguous', 'acknowledged_unverified'):
+        raise CaptureError('game_score_response_invalid')
+    return data
+
+
 class QRSync:
     def __init__(self, private: Path = PRIVATE, *, runner=capture, cooldown=60, on_result=None,
                  before_capture=None, logout_runner=logout, archive=None, probe_runner=probe,
@@ -551,6 +568,17 @@ class QRSync:
                 try:
                     worker = threading.Thread(target=self._cleanup_work, args=(user, send), daemon=True, name='qr-cleanup')
                     worker.start()
+                except Exception:
+                    self.gate.release()
+                    raise
+                return True
+            if text == '/上传游戏成绩':
+                if not self.gate.acquire(blocking=False):
+                    send(int(user), '当前有游戏会话操作正在进行，请稍后再试。')
+                    return True
+                try:
+                    threading.Thread(target=self._game_score_work, args=(user, send),
+                                     daemon=True, name='qr-game-score').start()
                 except Exception:
                     self.gate.release()
                     raise
@@ -647,6 +675,32 @@ class QRSync:
             send(int(user), '登出接口已接受；游戏侧会话释放尚未核验，如仍提示占用，请等待游戏侧解除后再登录。')
         except Exception:
             send(int(user), '登出未确认，会话记录保留；请检查游戏状态后重试 /logout。')
+        finally:
+            self.gate.release()
+
+    @serialized_worker
+    def _game_score_work(self, user, send):
+        try:
+            record = session_record(user, self.private)
+            if record is None or record.get('state') != 'active':
+                send(int(user), '没有可用的保留会话；本次未上传游戏成绩。')
+                return
+            try:
+                read_private(self.private / ('game-score-' + user + '.json'), 8*1024*1024)
+            except FileNotFoundError:
+                send(int(user), '尚未准备当前会话的原生游玩结算数据；本次未上传。仅有查分器成绩或历史最佳不足以生成完整结算。')
+                return
+            result = game_score_upload(user, private=self.private)
+            status = result['status']
+            if status == 'verified':
+                text = '游戏成绩已提交并通过成绩与券库存读回核对；未使用券。'
+            elif status == 'rejected':
+                text = '游戏成绩上传前校验未通过，本次未发送结算；需核对原生结算数据与当前会话。'
+            else:
+                text = '游戏成绩写入结果未全部确认；请先核对成绩，不要重复上传。'
+            send(int(user), text)
+        except Exception:
+            send(int(user), '游戏成绩上传结果未确认；请先核对成绩，不要重复上传。')
         finally:
             self.gate.release()
 

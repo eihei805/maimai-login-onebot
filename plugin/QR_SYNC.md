@@ -60,3 +60,25 @@ CLI `--game-charge` 只读查询上架券；`--ticket-purchase --session-owner Q
 结算依赖模块、完整字段 schema 和离线回归一并提供。`--settle-basic` 仅开放物品 kind=1/id=201 随 SD BASIC 全 Miss 结算的测试路径，需完整存档及明确计划。曲目校验读取 `plugin/data/music_data.json` 公共缓存（部署前准备）；hold 也沿用该缓存依赖。物品服务端保存仍需实际读回验证。
 
 白名单群会核验原消息、发送者与消息内容；有权限时尝试撤回，无管理权限或撤回失败会提示公开风险后继续。二维码本地尝试后不再重复提交。登录后的 60/840 秒登出策略保持不变。
+
+
+### Game-account score import (native single-track document)
+
+`/上传游戏成绩` is separate from third-party score-site syncing. It imports a
+locally prepared `game-score-<QQ>.json` from the private directory. The document
+must contain the current session binding, a full pre-play upload-format baseline,
+a complete native post-play request, and explicit `extend_flags` for snapshot
+collection. The producer must supply judgment counts and profile/rating changes;
+this entry does not convert historical-best exports into fabricated plays.
+
+CLI: `python maimai-live-client.py --upload-game-scores --session-owner QQ
+--score-document PRIVATE/game-score-QQ.json` (one shell line).
+
+The coordinator compares the baseline to fresh account reads, rejects unrelated
+changes or ticket use, consumes the shared per-session claim before a single
+`UpsertUserAllApi`, and reads scores plus ticket inventory back. An ambiguous
+result is never retried automatically. Current scope is one ordinary chart per
+document; charts, profile/rating and machine evidence must come from a compatible
+producer. No compatible live document is bundled. Offline tests do not establish
+acceptance or persistence on a game server. A missing document produces an explicit
+message and sends no settlement; this is not a completed arbitrary-score editor.

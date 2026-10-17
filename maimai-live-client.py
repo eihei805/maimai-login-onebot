@@ -412,6 +412,8 @@ def _main():
     mode.add_argument('--ticket-inventory', action='store_true')
     mode.add_argument('--game-charge', action='store_true', help='Read current ticket offerings without login or QR')
     mode.add_argument('--settle-basic', action='store_true')
+    mode.add_argument('--upload-game-scores', action='store_true', help='Submit a private, session-bound native post-play packet and verify scores')
+    parser.add_argument('--score-document', type=Path)
     mode.add_argument('--ticket-purchase', '--buy-ticket', dest='ticket_purchase', action='store_true', help='Charge purchase; defaults to retaining stock')
     parser.add_argument('--charge-id', type=int, choices=(2, 3))
     parser.add_argument('--ticket-action', choices=('hold', 'buy_use'))
@@ -430,7 +432,7 @@ def _main():
         self_test()
         return 0
     c, raw = load_config()
-    blocked = blockers(c, raw, args.allow_http_qr or args.logout_session or args.probe_session or args.ticket_inventory or args.settle_basic or args.ticket_purchase or args.game_charge)
+    blocked = blockers(c, raw, args.allow_http_qr or args.logout_session or args.probe_session or args.ticket_inventory or args.settle_basic or args.ticket_purchase or args.game_charge or args.upload_game_scores)
     if args.check or blocked:
         print(json.dumps({'status':'blocked' if blocked else 'ready', 'blockers':blocked, 'requests_live':0}))
         return 2 if blocked else 0
@@ -586,6 +588,31 @@ def _main():
         result = submit_ticket(client, session, owner=args.session_owner, private=PRIVATE,
             snapshot=snapshot, machine=plan['machine'], build_args=build_args,
             charge_id=ticket['charge_id'], action=ticket['action'])
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result['status'] == 'verified' else 3
+    if args.upload_game_scores:
+        if (not args.session_owner or args.qr_file or args.qr_stdin or args.logout
+                or not args.score_document or args.settlement_plan):
+            raise SafeFailure('game_score_inputs_rejected')
+        if (args.score_document.parent != PRIVATE or
+                args.score_document.name != 'game-score-' + args.session_owner + '.json'):
+            raise SafeFailure('game_score_path_rejected')
+        document = m.object_json(private_read(args.score_document, 8*1024*1024))
+        if (document.get('owner') != args.session_owner or document.get('version') != 1
+                or type(document.get('extend_flags')) is not dict):
+            raise SafeFailure('game_score_document_rejected')
+        if not 1 <= args.page_budget <= 512:
+            raise SafeFailure('game_score_page_budget_rejected')
+        sys.path.insert(0, str(Path(__file__).with_name('plugin')))
+        from settlement_collect import collect_snapshot
+        from game_score_upload import submit_scores
+        transport = Transport(c, total=180, allow_settlement=True)
+        client = m.Client(c, transport)
+        session = restore_session(args.session_owner, client, transport)
+        snapshot = collect_snapshot(client, session, captured_at=int(time.time()),
+            extend_flags=document['extend_flags'], item_kinds=(1,), page_budget=args.page_budget)
+        result = submit_scores(client, session, owner=args.session_owner, private=PRIVATE,
+            snapshot=snapshot, document=document)
         print(json.dumps(result, ensure_ascii=False))
         return 0 if result['status'] == 'verified' else 3
     if args.settle_basic:

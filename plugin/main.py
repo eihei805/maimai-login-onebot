@@ -252,7 +252,7 @@ def handle(event: dict[str, Any]) -> None:
     if token_help:
         _group_qr_hint(int(event['group_id']), TOKEN_HELP.replace('私聊绑定', '群内绑定（须成功撤回）'))
         return
-    if text in ('/logout', '/清理会话', '/同意HTTP取分', '/撤销HTTP取分', '/上传状态', '/解绑水鱼', '/解绑落雪', '/查券') or text.startswith('/购券'):
+    if text in ('/logout', '/清理会话', '/同意HTTP取分', '/撤销HTTP取分', '/上传状态', '/解绑水鱼', '/解绑落雪', '/查券', '/上传游戏成绩') or text.startswith('/购券'):
         synthetic = dict(event, message_type='private')
         def report(_user: int, result: str) -> None:
             _group_qr_hint(int(event['group_id']), result.replace('私聊', '群内'))
